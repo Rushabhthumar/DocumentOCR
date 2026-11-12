@@ -2,17 +2,30 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.models.verification_models import VerifyRequest
+from app.models.verification_models import BatchVerifyRequest, VerifyRequest
+from app.services.batch_verification_service import BatchVerificationService
 from app.services.history_service import HistoryService
 from app.services.transaction_verification_service import TransactionVerificationService
 
 router = APIRouter(prefix="/api/transaction-verification", tags=["Transaction Verification"])
 
 
+@router.post("/batch")
+def verify_transactions_batch(body: BatchVerifyRequest):
+    """
+    Fetch transactions by companyId + periodId + modifiedDate, then verify each
+    transaction that has attachments. Updates isTransactionVerifyByOCR only when verified.
+    Sends a summary email to the configured recipient.
+    """
+    service = BatchVerificationService()
+    result = service.run(body)
+    return result.model_dump(mode="json")
+
+
 @router.post("/{transaction_id}/verify")
 def verify_transaction(transaction_id: str, body: VerifyRequest | None = None):
     """
-    Angular should send only the transaction ID.
+    Verify a single transaction by ID.
     Backend loads authoritative transaction + file IDs from Finance API.
     """
     force = body.force if body else False

@@ -39,6 +39,50 @@ class TransactionService:
             if owns_client:
                 client.close()
 
+    def list_transactions(
+        self,
+        *,
+        company_id: str,
+        period_id: int,
+        modified_date: str,
+    ) -> list[dict[str, Any]]:
+        """
+        GET /Transactions?periodId=&companyId=&modifiedDate=
+        Normalizes common list response shapes into a list of transaction dicts.
+        """
+        url = f"{self.settings.finance_api_base_url.rstrip('/')}{self.settings.transaction_list_path}"
+        params = {
+            "periodId": period_id,
+            "companyId": company_id,
+            "modifiedDate": modified_date,
+        }
+        owns_client = self._client is None
+        client = self._get_client()
+        try:
+            response = client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            return self._normalize_transaction_list(data)
+        finally:
+            if owns_client:
+                client.close()
+
+    @staticmethod
+    def _normalize_transaction_list(data: Any) -> list[dict[str, Any]]:
+        if data is None:
+            return []
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            for key in ("data", "items", "result", "results", "transactions", "value"):
+                nested = data.get(key)
+                if isinstance(nested, list):
+                    return [item for item in nested if isinstance(item, dict)]
+            # Single transaction object
+            if data.get("_id") or data.get("id"):
+                return [data]
+        return []
+
     def to_snapshot(self, payload: dict[str, Any]) -> TransactionSnapshot:
         attachments = payload.get("attachments") or []
         file_ids: list[str] = []

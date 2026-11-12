@@ -79,3 +79,36 @@ class VerifyRequest(BaseModel):
 
 class LocalExtractRequest(BaseModel):
     document_hint: Optional[str] = None
+
+
+class BatchVerifyRequest(BaseModel):
+    companyId: str
+    modifiedDate: str  # ISO date/datetime accepted by Finance API
+    periodId: int
+    force: bool = True
+
+
+class BatchTransactionOutcome(BaseModel):
+    transaction_id: str
+    status: str  # COMPLETED | FAILED | SKIPPED
+    decision: Optional[str] = None
+    status_updated: bool = False
+    file_ids: list[str] = Field(default_factory=list)
+    message: str = ""
+    errors: list[str] = Field(default_factory=list)
+
+
+class BatchVerifyResponse(BaseModel):
+    companyId: str
+    periodId: int
+    modifiedDate: str
+    total_fetched: int = 0
+    processed: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    email_sent: bool = False
+    email_to: Optional[str] = None
+    email_error: Optional[str] = None
+    results: list[BatchTransactionOutcome] = Field(default_factory=list)
+    message: str = ""

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     finance_api_base_url: str = "https://finance.api.gurukul.ninja"
     transaction_get_path: str = "/Transactions/GetTransaction/{transaction_id}"
     transaction_update_path: str = "/Transactions/{transaction_id}?isMigration=false"
+    # List endpoint: /Transactions?periodId=&companyId=&modifiedDate=
+    transaction_list_path: str = "/Transactions"
 
     file_api_base_url: str = "https://files.api.gurukul.ninja"
     file_download_path: str = "/File/DownloadOCR/{file_id}"
@@ -48,6 +50,16 @@ class Settings(BaseSettings):
     # Status field written only on successful verification
     verified_flag_field: str = "isTransactionVerifyByOCR"
     verified_flag_value: bool = True
+
+    # Batch summary email via free Gmail SMTP only (no paid email APIs)
+    mail_to: str = "rutvik.d@gurukul.org"
+    mail_from: Optional[str] = None  # defaults to SMTP_USERNAME (Gmail address)
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: Optional[str] = None  # your free Gmail address
+    smtp_password: Optional[str] = None  # Gmail App Password (not account password)
+    smtp_use_tls: bool = True
+    smtp_enabled: bool = False
 
     @property
     def amount_tolerance_decimal(self):

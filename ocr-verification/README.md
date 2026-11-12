@@ -84,32 +84,65 @@ Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/transaction-verification/{transactionId}/verify` | Full verify flow |
+| POST | `/api/transaction-verification/batch` | Batch verify by company/period/modifiedDate |
+| POST | `/api/transaction-verification/{transactionId}/verify` | Single transaction verify |
 | GET | `/api/transaction-verification/{transactionId}/result` | Latest result |
 | GET | `/api/transaction-verification/{transactionId}/history` | History |
 | POST | `/api/ocr/extract` | Upload a file and extract |
 | POST | `/api/ocr/extract-sample/{sample_name}` | Extract from `./samples` |
 | GET | `/health` | Health check |
 
-### 8) Postman / manual verify
+### 8) Batch verify (recommended)
+
+```http
+POST http://127.0.0.1:8000/api/transaction-verification/batch
+Content-Type: application/json
+
+{
+  "companyId": "60654665e169c893412eae7e",
+  "modifiedDate": "2026-11-01",
+  "periodId": 79
+}
+```
+
+Flow:
+1. Calls Finance `GET /Transactions?periodId=&companyId=&modifiedDate=`
+2. For each transaction with attachments, downloads all `fileId`s via `/File/DownloadOCR/{fileId}`
+3. Extracts + matches amount/date
+4. PUT updates `isTransactionVerifyByOCR=true` and appends `OCR` to narration only when verified
+5. Skips PUT on failure/error and continues
+6. Emails summary to `rutvik.d@gurukul.org` using **free Gmail SMTP only** (no paid email API). If SMTP is disabled, a draft is saved under `temp/last_batch_email.txt`.
+
+Free Gmail setup:
+
+```env
+SMTP_ENABLED=true
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your.email@gmail.com
+SMTP_PASSWORD=your-16-char-app-password
+MAIL_TO=rutvik.d@gurukul.org
+```
+
+Create the App Password at: Google Account → Security → 2-Step Verification → App passwords.
+
+### 9) Single transaction verify
 
 1. `POST http://127.0.0.1:8000/api/transaction-verification/<TRANSACTION_ID>/verify`
 2. Body optional: `{ "force": false }`
 3. Service loads transaction + attachment `fileId`s from Finance API, downloads files, extracts, compares, and only then may PUT:
 
 ```json
-{ "...existing transaction fields...": "...", "isTransactionVerifyByOCR": true }
+{ "...existing transaction fields...": "...", "isTransactionVerifyByOCR": true, "narration": "... OCR" }
 ```
 
-No other business fields are intentionally modified.
-
-### 9) Run tests
+### 10) Run tests
 
 ```powershell
 pytest -q
 ```
 
-### 10) Demo sample PDFs
+### 11) Demo sample PDFs
 
 ```powershell
 python scripts\demo_extract_samples.py
