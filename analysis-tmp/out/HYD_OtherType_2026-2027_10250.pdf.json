@@ -1,0 +1,43 @@
+{
+  "file": "HYD_OtherType_2026-2027_10250.pdf",
+  "sizeBytes": 0,
+  "pageCount": 2,
+  "pages": [
+    {
+      "pageNumber": 1,
+      "width": 578.16,
+      "height": 824.4,
+      "operatorCount": 5,
+      "textItemCount": 0,
+      "lineCount": 0,
+      "charCount": 0,
+      "alnumCount": 0,
+      "isMeaningful": false,
+      "preview": "",
+      "linesPreview": []
+    },
+    {
+      "pageNumber": 2,
+      "width": 578.16,
+      "height": 824.4,
+      "operatorCount": 5,
+      "textItemCount": 0,
+      "lineCount": 0,
+      "charCount": 0,
+      "alnumCount": 0,
+      "isMeaningful": false,
+      "preview": "",
+      "linesPreview": []
+    }
+  ],
+  "metadata": {
+    "PDFFormatVersion": "1.3",
+    "Language": null,
+    "EncryptFilterName": null,
+    "IsLinearized": false,
+    "IsAcroFormPresent": false,
+    "IsXFAPresent": false,
+    "IsCollectionPresent": false,
+    "IsSignaturesPresent": false
+  }
+}
