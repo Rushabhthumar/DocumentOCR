@@ -6,10 +6,11 @@ from typing import Optional
 
 from app.models.extraction_models import FieldValue
 from app.services.extractors.amount_total import extract_grand_total
+from app.services.extractors.ocr_date import normalize_ocr_date
 from app.validators.amount_validator import normalize_amount
 
 
-_DATE_TOKEN = re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b")
+_DATE_TOKEN = re.compile(r"\b(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})\b")
 _AMOUNT_TOKEN = re.compile(
     r"(?<!\d)((?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?)(?!\d)"
 )
@@ -21,7 +22,7 @@ _AMOUNT_LABEL_PATTERNS = [
     (
         r"(?i)(?:grand\s*total|net\s*payable|amount\s*payable|total\s*amount\s*after\s*tax|"
         r"total\s*amount\s*due|bill\s*amount|invoice\s*amount|net\s*amount|"
-        r"total\s*due|amount\s*in\s*figures|total\s*value)\s*[:\-]?\s*"
+        r"total\s*due|amount\s*in\s*figures|total\s*value|total\s*bill\s*amount)\s*[:\-]?\s*"
         r"(?:rs\.?\s*|inr\s*|₹\s*)?" + _AMOUNT_CAPTURE
     ),
     (
@@ -35,9 +36,9 @@ _DATE_LABEL_PATTERNS = [
     (
         r"(?i)(?:invoice\s*date|bill\s*date|voucher\s*date|receipt\s*date|"
         r"challan\s*date|document\s*date|txn\s*date|transaction\s*date|"
-        r"payment\s*date|pymt_date|dated)\s*[:\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})"
+        r"payment\s*date|pymt_date|dated)\s*[:\-]?\s*(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})"
     ),
-    r"(?i)\bdate\s*[:\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+    r"(?i)\bdate\s*[:\-]?\s*(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})",
 ]
 
 _DOC_NO_PATTERNS = [
@@ -63,21 +64,6 @@ def _find(pattern: str, text: str) -> Optional[str]:
     return match.group(1).strip() if match.lastindex else match.group(0).strip()
 
 
-def _normalize_ocr_date(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-    text = value.strip()
-    text = re.sub(r"(?i)^(?:invoice|bill|voucher|receipt|challan|document|payment)?\s*date\s*[:\-]?\s*", "", text)
-    text = re.sub(r"(?i)^dated\s*[:\-]?\s*", "", text).strip()
-    text = re.sub(r"(\d{1,2}[/-]\d{1,2}[/-])(\d)\.(\d)", r"\1\2\3", text)
-    match = re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)
-    if match:
-        return match.group(0)
-    glued = re.sub(r"\b(\d{1,2})([/-])(\d{2})(\d{2})\b", r"\1\2\3\2\4", text)
-    match = re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", glued)
-    return match.group(0) if match else None
-
-
 def _pick_labeled_amount(compact: str) -> Optional[Decimal]:
     for pattern in _AMOUNT_LABEL_PATTERNS:
         for match in re.finditer(pattern, compact):
@@ -99,6 +85,14 @@ def _pick_fallback_amount(compact: str) -> Optional[Decimal]:
     candidates: list[tuple[int, Decimal]] = []
     for match in _AMOUNT_TOKEN.finditer(compact):
         raw = match.group(1)
+        prefix = compact[max(0, match.start() - 30) : match.start()]
+        # Skip bank / tax / phone identifiers mistaken as totals
+        if re.search(
+            r"(?i)(?:a/?c\.?\s*no|account|ifsc|pan|gstin|gstn|cell|phone|mob|pin|"
+            r"hsn|sac|invoice\s*no|grn\s*no|gate\s*entry)",
+            prefix,
+        ):
+            continue
         # Skip long digit runs without decimals (account / meter numbers)
         digits = raw.replace(",", "").replace(".", "")
         if "." not in raw and len(digits) >= 8:
@@ -107,6 +101,10 @@ def _pick_fallback_amount(compact: str) -> Optional[Decimal]:
         if amount is None or amount < Decimal("1.00"):
             continue
         if amount > Decimal("100000000"):
+            continue
+        # Qty-like decimals (5104.87 Sqf) — skip when unit words follow
+        window = compact[match.start() : min(len(compact), match.end() + 12)]
+        if re.search(r"(?i)\b(?:sqf|sq\.?\s*ft|tons?|qty|nos?)\b", window):
             continue
         candidates.append((match.start(), amount))
     if not candidates:
@@ -156,28 +154,40 @@ def extract_generic_fields(text: str, page_number: int = 1, confidence: float = 
 
     doc_date = None
     for pattern in _DATE_LABEL_PATTERNS:
-        doc_date = _normalize_ocr_date(_find(pattern, compact))
+        doc_date = normalize_ocr_date(_find(pattern, compact))
         if doc_date:
             break
     if not doc_date:
         # First plausible date token in the document
         match = _DATE_TOKEN.search(compact)
         if match:
-            doc_date = _normalize_ocr_date(match.group(1))
+            doc_date = normalize_ocr_date(match.group(1))
             warnings.append(f"Date inferred from first date token: {doc_date}")
 
     doc_no = None
     for pattern in _DOC_NO_PATTERNS:
         doc_no = _find(pattern, compact)
-        if doc_no:
-            break
+        if not doc_no:
+            continue
+        # Skip pure dates captured as document numbers
+        from app.validators.date_validator import normalize_date
+
+        if normalize_date(doc_no) is not None and not re.search(r"[A-Za-z]", doc_no):
+            doc_no = None
+            continue
+        break
 
     party = None
     for pattern in _PARTY_PATTERNS:
         party = _find(pattern, compact)
-        if party:
-            party = re.sub(r"\s+", " ", party).strip(" .,:-")
-            break
+        if not party:
+            continue
+        party = re.sub(r"\s+", " ", party).strip(" .,:-")
+        party = re.sub(r"(?i)^HSN\s*&?\s*SAC\s*Code\s*[:\-]?\s*[0-9A-Z]+\s*", "", party).strip()
+        if re.search(r"(?i)(?:hsn|sac\s*code|impeccable|particulars|qty|amount)", party):
+            party = None
+            continue
+        break
 
     description = None
     for pattern in [

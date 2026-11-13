@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     ocr_lang: str = "en"
     use_gpu: bool = False
     enable_structure_ocr: bool = True
-    enable_trocr_fallback: bool = False
+    enable_trocr_fallback: bool = True
+    # Structure OCR is heavy on CPU; use only when page looks tabular/invoice-like
+    structure_ocr_for_all_pages: bool = False
 
     history_db_path: str = "./temp/verification_history.db"
     temp_dir: str = "./temp"

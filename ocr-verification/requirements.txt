@@ -29,6 +29,7 @@ respx==0.21.1
 # OCR runtime (install after requirements.txt):
 #   python -m pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
 #   pip install paddleocr==3.2.0
-# Optional structure / handwriting:
-#   pip install "paddleocr[doc-parser]==3.2.0"
-#   pip install transformers torch --index-url https://download.pytorch.org/whl/cpu
+# Structure tables + handwriting fallback:
+#   pip install "paddleocr[doc-parser]==3.2.0" "paddlex[ocr]==3.2.1"
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install transformers

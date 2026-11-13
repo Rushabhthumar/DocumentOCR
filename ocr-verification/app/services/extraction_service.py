@@ -69,6 +69,61 @@ class ExtractionService:
         self.image_service = image_service or ImageService()
         self.classifier = classifier or DocumentClassifier()
 
+    def _should_use_structure(self, hint_text: str = "") -> bool:
+        if not self.settings.enable_structure_ocr:
+            return False
+        if self.settings.structure_ocr_for_all_pages:
+            return True
+        # First-pass OCR text is usually empty for scans; decide after light OCR via caller.
+        return bool(
+            re.search(
+                r"(?i)tax\s*invoice|invoice\s*no|grand\s*total|hsn|cgst|sgst|table",
+                hint_text or "",
+            )
+        )
+
+    def _run_page_ocr(self, image, *, page_hint_text: str = ""):
+        """
+        Run PaddleOCR once, then selectively enrich with structure tables / TrOCR.
+        Structure is expensive on CPU — only for invoice-like pages missing a clear total.
+        """
+        from app.services.extractors.amount_total import extract_grand_total
+
+        base = self.ocr_service.run_ocr(
+            image,
+            preprocess=True,
+            use_structure=False,
+            use_trocr=False,
+        )
+        text = base.text or page_hint_text or ""
+        total, _ = extract_grand_total(text)
+        use_structure = self._should_use_structure(text) and total is None
+        if use_structure or self.settings.structure_ocr_for_all_pages:
+            structure = self.ocr_service.run_structure(
+                image.convert("RGB") if getattr(image, "mode", "RGB") != "RGB" else image
+            )
+            if structure:
+                table_text = structure.get("table_text") or ""
+                structure_text = structure.get("structure_text") or ""
+                extras = [t for t in (table_text, structure_text) if t]
+                if extras:
+                    base.table_text = table_text
+                    base.structure_text = structure_text
+                    base.text = (base.text or "") + "\n\n--- STRUCTURE ---\n" + "\n".join(extras)
+                    base.engine = f"{base.engine}+structure"
+                    base.warnings.append("Merged PP-StructureV3 table/layout text")
+
+        use_trocr = self.settings.enable_trocr_fallback and (
+            self.ocr_service._looks_handwritten_or_noisy(base)
+            or bool(re.search(r"(?i)cash\s*(?:bill|memo)|laundry|engineering", base.text or ""))
+        )
+        if use_trocr:
+            base = self.ocr_service._apply_trocr_on_low_confidence(
+                self.image_service.preprocess(image, for_handwriting=True).convert("RGB"),
+                base,
+            )
+        return base
+
     def extract_file(
         self,
         path: str | Path,
@@ -96,7 +151,7 @@ class ExtractionService:
                             errors.append(f"Page {page.page_number}: OCR required but no image")
                             continue
                         try:
-                            ocr_result = self.ocr_service.run_ocr(page.image)
+                            ocr_result = self._run_page_ocr(page.image, page_hint_text=text)
                             text = ocr_result.text
                             conf = ocr_result.average_confidence
                             warnings.extend(
@@ -116,7 +171,7 @@ class ExtractionService:
                 page_count = 1
                 image = self.image_service.load(path)
                 try:
-                    ocr_result = self.ocr_service.run_ocr(image)
+                    ocr_result = self._run_page_ocr(image)
                     page_texts[1] = ocr_result.text
                     page_confidences[1] = ocr_result.average_confidence
                     warnings.extend(ocr_result.warnings)
@@ -184,13 +239,19 @@ class ExtractionService:
                     merged[key] = value
                 continue
             existing = merged.get(key)
+            if value.value is None and existing is not None:
+                continue
+            # Keep first good value for identity fields unless explicitly overwriting
+            if (
+                existing
+                and existing.value is not None
+                and key not in overwrite_keys
+                and key in {"amount", "documentDate", "documentNumber", "partyName", "invoiceDate"}
+            ):
+                continue
             if existing and existing.value is not None and key not in overwrite_keys:
                 if value.value is None:
                     continue
-                if key not in {"amount", "documentDate", "documentNumber", "partyName"}:
-                    continue
-            if value.value is None and existing is not None:
-                continue
             merged[key] = value
 
     def _populate_structured_fields(
@@ -207,7 +268,7 @@ class ExtractionService:
             page_type = page_types.get(page_no, result.document_type)
             conf = page_confidences.get(page_no, 0.0)
 
-            # Reclassify obvious e-way / tax-invoice pages when UNKNOWN
+            # Reclassify obvious e-way / tax-invoice / cash-bill pages when UNKNOWN
             if page_type == DocumentType.UNKNOWN:
                 if re.search(r"(?i)e[\-\s]?way\s*bill|total\s*inv\.?\s*amt", text):
                     page_type = DocumentType.EWAY_BILL
@@ -215,6 +276,21 @@ class ExtractionService:
                 elif re.search(r"(?i)tax\s*invoice|invoice\s*no", text):
                     page_type = DocumentType.INVOICE
                     page_types[page_no] = page_type
+                elif re.search(r"(?i)cash\s*(?:bill|memo)|cashmemo", text):
+                    page_type = DocumentType.CASH_MEMO
+                    page_types[page_no] = page_type
+                elif re.search(r"(?i)laund(?:ry|ary)\s*register", text):
+                    # Supporting handwritten register — not the payable bill page
+                    page_type = DocumentType.UNKNOWN
+                    page_types[page_no] = page_type
+                    result.warnings.append(
+                        f"Page {page_no}: laundry register treated as supporting page (no amount)"
+                    )
+
+            # Skip amount harvesting from laundry registers / pure handwritten tallies
+            is_support_register = bool(
+                re.search(r"(?i)laund(?:ry|ary)\s*register|monitor'?s?\s*sign", text)
+            )
 
             # 1) Type-specific extractors
             if page_type == DocumentType.UTR_STATEMENT or (
@@ -239,9 +315,12 @@ class ExtractionService:
                 result.warnings.extend(parsed["warnings"])
             elif page_type == DocumentType.GRN:
                 parsed = extract_grn_fields(text, page_number=page_no, confidence=conf)
-                # GRN has no payable total — never take quantity as amount
+                # GRN has no payable total — never take quantity as amount.
+                # Also do not overwrite bill party/date/doc-no with GRN boilerplate.
                 grn_fields = {
-                    k: v for k, v in parsed["fields"].items() if k != "amount"
+                    k: v
+                    for k, v in parsed["fields"].items()
+                    if k not in {"amount", "partyName", "documentDate", "documentNumber"}
                 }
                 self._merge_field_map(merged_fields, grn_fields)
                 result.items.extend(parsed["items"])
@@ -275,25 +354,72 @@ class ExtractionService:
                 )
 
             # 3) Collect grand-total candidates per page (bill / e-bill). Do NOT sum.
-            if page_type != DocumentType.GRN and page_type != DocumentType.UTR_STATEMENT:
-                total, _src = extract_grand_total(text)
+            if (
+                page_type != DocumentType.GRN
+                and page_type != DocumentType.UTR_STATEMENT
+                and not is_support_register
+            ):
+                total, src = extract_grand_total(text)
                 if total is not None:
                     page_totals.append((page_no, page_type, total, conf))
+                    result.warnings.append(
+                        f"Page {page_no}: candidate total {total} via {src or 'pattern'}"
+                    )
+
+        # 4) Final amount authority: bill pages only (never GRN/register heuristics)
+        bill_page_texts: list[str] = []
+        for page_no, text in sorted(result.page_texts.items()):
+            page_type = page_types.get(page_no, result.document_type)
+            if page_type in {DocumentType.GRN, DocumentType.UTR_STATEMENT}:
+                continue
+            if re.search(r"(?i)laund(?:ry|ary)\s*register|monitor'?s?\s*sign", text):
+                continue
+            bill_page_texts.append(text)
+
+        combined_bill_text = "\n".join(bill_page_texts)
+        combined_total, combined_src = extract_grand_total(combined_bill_text)
+        # Cash-memo / cash-bill column fallback when labels/words fail
+        if combined_total is None and re.search(
+            r"(?i)cash\s*(?:bill|memo)|cashmemo", combined_bill_text
+        ):
+            cash_parsed = extract_cash_memo_fields(combined_bill_text, confidence=0.7)
+            cash_amt = cash_parsed["fields"].get("amount")
+            if cash_amt and cash_amt.value:
+                try:
+                    combined_total = Decimal(str(cash_amt.value))
+                    combined_src = cash_amt.source or "cash_memo_fallback"
+                except Exception:  # noqa: BLE001
+                    combined_total = None
 
         resolved = self._resolve_grand_total(page_totals, result)
+        # Prefer combined bill-text total when it is stronger / present
+        if combined_total is not None:
+            if resolved is None or combined_total >= resolved or (
+                combined_src and "words" in str(combined_src)
+            ):
+                resolved = combined_total
+                result.warnings.append(
+                    f"Final amount {resolved} from combined bill text ({combined_src})"
+                )
+
         if resolved is not None:
             merged_fields["amount"] = FieldValue(
                 value=str(resolved),
-                confidence=max((c for _, _, _, c in page_totals), default=0.0),
-                source="resolved_grand_total",
+                confidence=max((c for _, _, _, c in page_totals), default=0.8),
+                source=combined_src or "resolved_grand_total",
             )
-        elif "amount" not in merged_fields:
+        elif "amount" not in merged_fields or merged_fields["amount"].value is None:
             merged_fields["amount"] = FieldValue(
                 value=None, confidence=0, reason="grand total not found"
             )
 
         result.page_types = page_types
         result.document_type = self._resolve_document_type(page_types, result)
+        # Ensure cash bills are not left as Unknown after reclassification
+        if result.document_type == DocumentType.UNKNOWN and any(
+            t == DocumentType.CASH_MEMO for t in page_types.values()
+        ):
+            result.document_type = DocumentType.CASH_MEMO
 
         result.fields = merged_fields or {
             "documentNumber": FieldValue(value=None, confidence=0, reason="not extracted"),
@@ -301,6 +427,11 @@ class ExtractionService:
             "partyName": FieldValue(value=None, confidence=0, reason="not extracted"),
             "amount": FieldValue(value=None, confidence=0, reason="not extracted"),
             "description": FieldValue(value=None, confidence=0, reason="not extracted"),
+        }
+        result.metadata = {
+            **(result.metadata or {}),
+            "extractor_build": "2026-11-13-amount-words-v2",
+            "amount_source": (merged_fields.get("amount").source if merged_fields.get("amount") else None),
         }
 
     def _resolve_grand_total(

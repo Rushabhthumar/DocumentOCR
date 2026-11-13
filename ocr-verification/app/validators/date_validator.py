@@ -10,8 +10,10 @@ from app.models.verification_models import FieldComparisonResult
 _DATE_PATTERNS = [
     ("%d-%m-%Y", re.compile(r"\b(\d{1,2})-(\d{1,2})-(\d{4})\b")),
     ("%d/%m/%Y", re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")),
+    ("%d.%m.%Y", re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")),
     ("%d-%m-%y", re.compile(r"\b(\d{1,2})-(\d{1,2})-(\d{2})\b")),
     ("%d/%m/%y", re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2})\b")),
+    ("%d.%m.%y", re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{2})\b")),
     ("%Y-%m-%d", re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")),
 ]
 
@@ -21,6 +23,42 @@ def _parse_with_format(text: str, fmt: str) -> Optional[date]:
         return datetime.strptime(text, fmt).date()
     except ValueError:
         return None
+
+
+def repair_ocr_date_text(text: str) -> str:
+    """Fix common OCR date glitches before parsing."""
+    cleaned = text.strip()
+    cleaned = re.sub(
+        r"(?i)^(?:invoice|bill|voucher|receipt|challan|document|payment)?\s*date\s*[:\-]?\s*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?i)^dated\s*[:\-]?\s*", "", cleaned).strip()
+    # 08/11/2.6 -> 08/11/26
+    cleaned = re.sub(r"(\d{1,2}[./\-]\d{1,2}[./\-])(\d)\.(\d)\b", r"\1\2\3", cleaned)
+    # 31/10/226 -> 31/10/2026 (year lost one digit of 20xx)
+    cleaned = re.sub(
+        r"\b(\d{1,2})([./\-])(\d{1,2})\2(2\d{2})\b",
+        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{m.group(2)}20{m.group(4)[1:]}",
+        cleaned,
+    )
+    # "12 t 11/2026" — day + month + year with OCR junk between
+    messy = re.search(
+        r"\b(\d{1,2})\s*[tT]?\s*[./\-(\s]+(\d{1,2})\s*[./\-)]+\s*(20\d{2}|\d{2})\b",
+        cleaned,
+    )
+    if messy and not re.search(r"\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}", cleaned):
+        cleaned = f"{messy.group(1)}/{messy.group(2)}/{messy.group(3)}"
+    # "12 t (/2026" — month unreadable; do not invent a date (avoid 12/20/26)
+    # Missing separator before short year ONLY when not already a real year: 08/1126 -> 08/11/26
+    cleaned = re.sub(
+        r"\b(\d{1,2})([./\-])(\d{4})\b",
+        lambda m: m.group(0)
+        if m.group(3).startswith(("19", "20"))
+        else f"{m.group(1)}{m.group(2)}{m.group(3)[:2]}{m.group(2)}{m.group(3)[2:]}",
+        cleaned,
+    )
+    return cleaned
 
 
 def normalize_date(value) -> Optional[date]:
@@ -45,6 +83,7 @@ def normalize_date(value) -> Optional[date]:
         except ValueError:
             pass
 
+    text = repair_ocr_date_text(text)
     for fmt, pattern in _DATE_PATTERNS:
         match = pattern.search(text)
         if not match:

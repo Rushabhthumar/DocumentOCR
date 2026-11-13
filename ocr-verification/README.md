@@ -3,7 +3,7 @@
 Local FastAPI service that verifies finance transactions against supporting documents using:
 
 - Digital PDF text extraction (`pypdfium2`, non-AGPL)
-- Local OCR for scanned pages (PaddleOCR / optional PP-StructureV3)
+- Local OCR for scanned pages (PaddleOCR + selective PP-StructureV3 tables + TrOCR handwriting fallback)
 - Document types: Cash Memo, GRN, UTR statement, Tax Invoice, Receipt, Voucher, Bill, Challan, plus a **generic fallback** so unknown/OtherType PDFs still yield amount & date
 - Amount / date / party / description comparison with `Decimal` arithmetic
 - Status update **only** when decision is `VERIFIED`, by appending `OCR` to narration on the existing transaction PUT payload
@@ -19,8 +19,8 @@ Angular integration can be added later. For now, call the APIs with a transactio
 | OpenCV / NumPy / Pillow | Apache / BSD / HPND | OK |
 | rapidfuzz | MIT | OK |
 | PaddlePaddle / PaddleOCR | Apache-2.0 | Primary OCR |
-| Tesseract (optional) | Apache-2.0 | Fallback only |
-| TrOCR (optional) | MIT model + Apache transformers | Handwriting fallback, disabled by default |
+| PP-StructureV3 (`paddlex[ocr]`) | Apache-2.0 | Table/layout enrichment when totals missing |
+| TrOCR (`transformers` + `torch`) | MIT model + Apache | Handwriting / noisy cash-bill line fallback |
 
 No paid cloud OCR APIs are used.
 
@@ -53,10 +53,20 @@ pip install -r requirements.txt
 
 ```powershell
 python -m pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-pip install "paddleocr[doc-parser]==3.0.0"
+pip install "paddleocr[doc-parser]==3.2.0" "paddlex[ocr]==3.2.1"
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install transformers
 ```
 
-First run downloads OCR models (internet required once). After that, processing is local.
+First run downloads OCR / structure / TrOCR models (internet required once). After that, processing is local.
+
+Useful `.env` flags:
+
+```env
+ENABLE_STRUCTURE_OCR=true
+ENABLE_TROCR_FALLBACK=true
+STRUCTURE_OCR_FOR_ALL_PAGES=false
+```
 
 ### 5) Configure `.env`
 
@@ -75,11 +85,27 @@ API_AUTH_TOKEN=Bearer <your-token>
 ### 6) Start API
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Prefer the no-reload starter (avoids duplicate/stale servers):
+.\scripts\start_server.ps1
 ```
 
-Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+Or manually:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8010
+```
+
+Swagger UI: [http://127.0.0.1:8010/docs](http://127.0.0.1:8010/docs)
+
+Confirm the live build before testing:
+
+```powershell
+curl http://127.0.0.1:8010/health
+# must include "version":"1.1.0" and "extractorBuild":"2026-11-13-amount-words-v2"
+```
+
+> If Angular still calls port **8000**, it may hit a stuck old process. Point it to **8010**, or reboot Windows to free 8000.
 
 ### 7) Useful endpoints
 

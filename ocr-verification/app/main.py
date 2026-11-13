@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import __version__
+from app import EXTRACTOR_BUILD, __version__
 from app.api.ocr_controller import router as ocr_router
 from app.api.verification_controller import router as verification_router
 from app.auth_context import clear_request_auth, set_request_auth
@@ -71,6 +71,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "version": __version__,
+            "extractorBuild": EXTRACTOR_BUILD,
             "authConfigured": bool(settings.api_auth_token),
         }
 

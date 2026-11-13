@@ -11,11 +11,16 @@ class DocumentClassifier:
 
     CASH_MEMO_SIGNALS = [
         r"\bcash\s*memo\b",
+        r"\bcashmemo\b",
+        r"\bcash\s*bill\b",
         r"\bcash\b[\s\S]{0,20}\bmemo\b",
         r"\bauthori[sz]ed\s*s[iy]gnature\b",
         r"\bcustomer\s*signature\b",
         r"\btotal\b[\s\S]{0,40}\bbalance\b",
+        r"\badv\.?\b[\s\S]{0,20}\bbal\.?\b",
         r"\ba\s*m\s*cooling\s*systems\b",
+        r"\blaundry\b",
+        r"\bengineering\s*works\b",
     ]
     GRN_SIGNALS = [
         r"\bgoods\s*received\s*note\b",
@@ -102,18 +107,23 @@ class DocumentClassifier:
         }
         best_type = DocumentType.UNKNOWN
         best_score = 0.0
+        best_hits = 0
         signals: list[str] = []
         for doc_type, (score, hits) in scores.items():
-            if score > best_score:
+            # Prefer absolute signal hits so strong labels like "CASH BILL" still win
+            # after more patterns are added to a type.
+            hit_count = len(hits)
+            if hit_count > best_hits or (hit_count == best_hits and score > best_score):
                 best_score = score
+                best_hits = hit_count
                 best_type = doc_type
                 signals = hits
-        if best_score < 0.2:
+        if best_hits == 0:
             best_type = DocumentType.UNKNOWN
         return ClassifiedPage(
             page_number=page_number,
             document_type=best_type,
-            confidence=best_score,
+            confidence=max(best_score, 0.45 if best_hits >= 1 else 0.0),
             signals=signals,
         )
 
