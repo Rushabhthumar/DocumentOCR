@@ -83,6 +83,28 @@ class BatchVerificationService:
             response.email_sent, response.email_error = self._send_summary(response)
             return response
 
+        test_txn_id = (self.settings.batch_test_transaction_id or "").strip()
+        if test_txn_id:
+            before = len(transactions)
+            transactions = [
+                item
+                for item in transactions
+                if self._transaction_id(item) == test_txn_id
+            ]
+            logger.info(
+                "TEST FILTER: batch limited to transaction_id=%s (%s of %s fetched)",
+                test_txn_id,
+                len(transactions),
+                before,
+            )
+            if not transactions:
+                response.message = (
+                    f"TEST FILTER: transaction {test_txn_id} not found in fetched list "
+                    f"(fetched={before})"
+                )
+                response.email_sent, response.email_error = self._send_summary(response)
+                return response
+
         for item in transactions:
             txn_id = self._transaction_id(item)
             file_ids = self._attachment_file_ids(item)

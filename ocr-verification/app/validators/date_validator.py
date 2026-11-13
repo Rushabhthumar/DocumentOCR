@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from app.models.verification_models import FieldComparisonResult
@@ -34,10 +34,14 @@ def normalize_date(value) -> Optional[date]:
     if not text:
         return None
 
-    # ISO datetime from finance API
+    # ISO datetime from finance API — use India business date (IST), not UTC calendar day
     if "T" in text:
         try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                return dt.date()
+            ist = timezone(timedelta(hours=5, minutes=30))
+            return dt.astimezone(ist).date()
         except ValueError:
             pass
 

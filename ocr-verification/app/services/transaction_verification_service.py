@@ -91,8 +91,8 @@ class TransactionVerificationService:
             except Exception as exc:  # noqa: BLE001
                 result = VerificationResult(
                     transaction_id=transaction_id,
-                    decision=VerificationDecision.EXTRACTION_FAILED,
-                    message=f"Failed to fetch transaction: {exc}",
+                    decision=VerificationDecision.MANUAL_REVIEW,
+                    message=f"Failed to fetch transaction from Finance API: {exc}",
                     errors=[str(exc)],
                 )
                 self.history_service.save(result)
@@ -337,23 +337,43 @@ class TransactionVerificationService:
                     (extraction.file_id, str(desc_field.value), desc_field.confidence)
                 )
 
-        # Amount conflict detection
-        unique_amounts = {str(a[1]) for a in amount_candidates}
-        if len(unique_amounts) > 1:
-            warnings.append(f"Conflicting document amounts found: {sorted(unique_amounts)}")
-            comparisons.append(
-                FieldComparisonResult(
-                    field_name="amount",
-                    expected=str(snapshot.amount) if snapshot.amount is not None else None,
-                    extracted=",".join(sorted(unique_amounts)),
-                    matched=False,
-                    status="CONFLICT",
-                    explanation="Multiple documents have conflicting amounts",
-                )
-            )
-            return comparisons, VerificationDecision.MANUAL_REVIEW, warnings
+        # Prefer any extracted amount that matches the transaction (common when
+        # multiple attachments include GRN + invoice with different printed totals).
+        selected_amount = None
+        if amount_candidates:
+            if snapshot.amount is not None:
+                tol = self.settings.amount_tolerance_decimal
+                matching = [
+                    a for a in amount_candidates if abs(a[1] - snapshot.amount) <= tol
+                ]
+                if matching:
+                    selected_amount = matching[0][1]
+                    if len({str(a[1]) for a in amount_candidates}) > 1:
+                        warnings.append(
+                            "Multiple document amounts found; selected the one matching "
+                            f"transaction amount {snapshot.amount}"
+                        )
+                else:
+                    unique_amounts = {str(a[1]) for a in amount_candidates}
+                    if len(unique_amounts) > 1:
+                        warnings.append(
+                            f"Conflicting document amounts found: {sorted(unique_amounts)}"
+                        )
+                        comparisons.append(
+                            FieldComparisonResult(
+                                field_name="amount",
+                                expected=str(snapshot.amount),
+                                extracted=",".join(sorted(unique_amounts)),
+                                matched=False,
+                                status="CONFLICT",
+                                explanation="Multiple documents have conflicting amounts",
+                            )
+                        )
+                        return comparisons, VerificationDecision.MANUAL_REVIEW, warnings
+                    selected_amount = amount_candidates[0][1]
+            else:
+                selected_amount = amount_candidates[0][1]
 
-        selected_amount = amount_candidates[0][1] if amount_candidates else None
         selected_date = date_candidates[0][1] if date_candidates else None
         selected_party = party_candidates[0][1] if party_candidates else None
         selected_description = description_candidates[0][1] if description_candidates else None

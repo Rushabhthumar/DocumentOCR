@@ -21,7 +21,8 @@ def test_amount_match_and_mismatch():
 def test_date_formats_indian():
     assert normalize_date("08/11/26").isoformat() == "2026-11-08"
     assert normalize_date("07-11-2026").isoformat() == "2026-11-07"
-    assert normalize_date("2026-11-07T18:30:00.000Z").isoformat() == "2026-11-07"
+    # Finance midnight IST is stored as previous-day 18:30Z
+    assert normalize_date("2026-11-07T18:30:00.000Z").isoformat() == "2026-11-08"
 
 
 def test_date_match_and_mismatch():

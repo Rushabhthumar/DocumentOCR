@@ -29,12 +29,38 @@ class TransactionService:
         url = f"{self.settings.finance_api_base_url.rstrip('/')}{path}"
         owns_client = self._client is None
         client = self._get_client()
+        last_error: Exception | None = None
         try:
-            response = client.get(url)
-            if response.status_code == 404:
-                raise LookupError(f"Transaction not found: {transaction_id}")
-            response.raise_for_status()
-            return response.json()
+            # Finance occasionally returns an empty body under load; retry briefly.
+            for attempt in range(1, 4):
+                try:
+                    response = client.get(url)
+                    if response.status_code == 404:
+                        raise LookupError(f"Transaction not found: {transaction_id}")
+                    response.raise_for_status()
+                    if not response.content or not response.content.strip():
+                        raise ValueError(
+                            f"Finance GetTransaction returned empty body "
+                            f"(status={response.status_code}, attempt={attempt})"
+                        )
+                    return response.json()
+                except LookupError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+                    logger.warning(
+                        "GetTransaction %s attempt %s failed: %s",
+                        transaction_id,
+                        attempt,
+                        exc,
+                    )
+                    if attempt < 3:
+                        import time
+
+                        time.sleep(0.4 * attempt)
+            raise RuntimeError(
+                f"Failed to fetch transaction {transaction_id}: {last_error}"
+            ) from last_error
         finally:
             if owns_client:
                 client.close()

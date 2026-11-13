@@ -12,7 +12,6 @@ class DocumentClassifier:
     CASH_MEMO_SIGNALS = [
         r"\bcash\s*memo\b",
         r"\bcash\b[\s\S]{0,20}\bmemo\b",
-        r"\bgstin\b",
         r"\bauthori[sz]ed\s*s[iy]gnature\b",
         r"\bcustomer\s*signature\b",
         r"\btotal\b[\s\S]{0,40}\bbalance\b",
@@ -33,6 +32,51 @@ class DocumentClassifier:
         r"\bpymt_date\b",
         r"\bneft\b",
     ]
+    INVOICE_SIGNALS = [
+        r"\btax\s*invoice\b",
+        r"\binvoice\s*no\b",
+        r"\binvoice\s*date\b",
+        r"\bgrand\s*total\b",
+        r"\btotal\s*amount\s*after\s*tax\b",
+        r"\bbilled\s*to\b",
+        r"\bcgst\b",
+        r"\bsgst\b",
+        r"\bigst\b",
+    ]
+    RECEIPT_SIGNALS = [
+        r"\breceipt\b",
+        r"\bmoney\s*receipt\b",
+        r"\breceived\s*with\s*thanks\b",
+        r"\breceipt\s*no\b",
+        r"\bcash\s*receipt\b",
+    ]
+    VOUCHER_SIGNALS = [
+        r"\bpayment\s*voucher\b",
+        r"\bcash\s*voucher\b",
+        r"\bjournal\s*voucher\b",
+        r"\bvoucher\s*no\b",
+        r"\bvoucher\s*date\b",
+    ]
+    BILL_SIGNALS = [
+        r"\bbill\s*of\s*supply\b",
+        r"\bproforma\s*bill\b",
+        r"\bbill\s*no\b",
+        r"\bbill\s*date\b",
+        r"\bbill\s*amount\b",
+    ]
+    CHALLAN_SIGNALS = [
+        r"\bdelivery\s*challan\b",
+        r"\bchallan\s*no\b",
+        r"\bchallan\s*date\b",
+    ]
+    EWAY_BILL_SIGNALS = [
+        r"\be[\-\s]?way\s*bill\b",
+        r"\beway\s*bil\b",
+        r"\btotal\s*inv\.?\s*amt\b",
+        r"\btransporter\b",
+        r"\bvehicle\s*/\s*trans\b",
+        r"\bapprox\s*distance\b",
+    ]
 
     def _score(self, text: str, patterns: list[str]) -> tuple[float, list[str]]:
         hits: list[str] = []
@@ -49,6 +93,12 @@ class DocumentClassifier:
             DocumentType.CASH_MEMO: self._score(text, self.CASH_MEMO_SIGNALS),
             DocumentType.GRN: self._score(text, self.GRN_SIGNALS),
             DocumentType.UTR_STATEMENT: self._score(text, self.UTR_SIGNALS),
+            DocumentType.INVOICE: self._score(text, self.INVOICE_SIGNALS),
+            DocumentType.RECEIPT: self._score(text, self.RECEIPT_SIGNALS),
+            DocumentType.VOUCHER: self._score(text, self.VOUCHER_SIGNALS),
+            DocumentType.BILL: self._score(text, self.BILL_SIGNALS),
+            DocumentType.CHALLAN: self._score(text, self.CHALLAN_SIGNALS),
+            DocumentType.EWAY_BILL: self._score(text, self.EWAY_BILL_SIGNALS),
         }
         best_type = DocumentType.UNKNOWN
         best_score = 0.0
@@ -82,6 +132,30 @@ class DocumentClassifier:
                 return ClassificationResult(
                     primary_type=DocumentType.UTR_STATEMENT,
                     confidence=0.4,
+                    raw_signals={"filename": filename},
+                )
+            if "invoice" in lower or "tax" in lower:
+                return ClassificationResult(
+                    primary_type=DocumentType.INVOICE,
+                    confidence=0.35,
+                    raw_signals={"filename": filename},
+                )
+            if "receipt" in lower:
+                return ClassificationResult(
+                    primary_type=DocumentType.RECEIPT,
+                    confidence=0.35,
+                    raw_signals={"filename": filename},
+                )
+            if "voucher" in lower:
+                return ClassificationResult(
+                    primary_type=DocumentType.VOUCHER,
+                    confidence=0.35,
+                    raw_signals={"filename": filename},
+                )
+            if "challan" in lower:
+                return ClassificationResult(
+                    primary_type=DocumentType.CHALLAN,
+                    confidence=0.35,
                     raw_signals={"filename": filename},
                 )
             if "othertype" in lower or "cash" in lower:

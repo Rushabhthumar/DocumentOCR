@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     verified_flag_field: str = "isTransactionVerifyByOCR"
     verified_flag_value: bool = True
 
+    # Temporary test filter: if set, batch processes only this transaction _id
+    batch_test_transaction_id: Optional[str] = None
+
     # Batch summary email via free Gmail SMTP only (no paid email APIs)
     mail_to: str = "rutvik.d@gurukul.org"
     mail_from: Optional[str] = None  # defaults to SMTP_USERNAME (Gmail address)

@@ -12,6 +12,7 @@ def test_batch_skips_no_attachments_and_completes_verified(tmp_path):
         temp_dir=str(tmp_path / "temp"),
         smtp_enabled=False,
         mail_to="rutvik.d@gurukul.org",
+        batch_test_transaction_id=None,
     )
     txn_service = MagicMock()
     verify_service = MagicMock()

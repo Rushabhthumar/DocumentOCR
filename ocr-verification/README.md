@@ -4,6 +4,7 @@ Local FastAPI service that verifies finance transactions against supporting docu
 
 - Digital PDF text extraction (`pypdfium2`, non-AGPL)
 - Local OCR for scanned pages (PaddleOCR / optional PP-StructureV3)
+- Document types: Cash Memo, GRN, UTR statement, Tax Invoice, Receipt, Voucher, Bill, Challan, plus a **generic fallback** so unknown/OtherType PDFs still yield amount & date
 - Amount / date / party / description comparison with `Decimal` arithmetic
 - Status update **only** when decision is `VERIFIED`, by appending `OCR` to narration on the existing transaction PUT payload
 

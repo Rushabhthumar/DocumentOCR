@@ -9,6 +9,11 @@ class DocumentType(str, Enum):
     GRN = "GoodsReceivedNote"
     UTR_STATEMENT = "UtrPaymentStatement"
     INVOICE = "Invoice"
+    RECEIPT = "Receipt"
+    VOUCHER = "Voucher"
+    BILL = "Bill"
+    CHALLAN = "Challan"
+    EWAY_BILL = "EwayBill"
     UNKNOWN = "Unknown"
     MIXED = "Mixed"
 
