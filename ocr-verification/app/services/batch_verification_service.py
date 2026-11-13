@@ -60,12 +60,19 @@ class BatchVerificationService:
         )
 
         try:
+            logger.info(
+                "Starting batch verify companyId=%s periodId=%s modifiedDate=%s",
+                request.companyId,
+                request.periodId,
+                request.modifiedDate,
+            )
             transactions = self.transaction_service.list_transactions(
                 company_id=request.companyId,
                 period_id=request.periodId,
-                modified_date=request.modifiedDate,
+                modified_date=request.modifiedDate or None,
             )
         except Exception as exc:  # noqa: BLE001
+            logger.exception("Batch fetch failed")
             response.message = f"Failed to fetch transactions: {exc}"
             response.email_sent, response.email_error = self._send_summary(response)
             return response
@@ -124,6 +131,9 @@ class BatchVerificationService:
                     )
                 else:
                     response.failed += 1
+                    failure_errors = list(result.errors or [])
+                    if not failure_errors and result.message:
+                        failure_errors = [result.message]
                     response.results.append(
                         BatchTransactionOutcome(
                             transaction_id=txn_id,
@@ -132,7 +142,7 @@ class BatchVerificationService:
                             status_updated=False,
                             file_ids=file_ids,
                             message=result.message or f"Decision {result.decision.value}",
-                            errors=list(result.errors or []),
+                            errors=failure_errors,
                         )
                     )
             except Exception as exc:  # noqa: BLE001
@@ -170,7 +180,7 @@ class BatchVerificationService:
             "",
             f"Company ID: {response.companyId}",
             f"Period ID: {response.periodId}",
-            f"Modified Date: {response.modifiedDate}",
+            f"Modified Date: {response.modifiedDate or '(all)'}",
             "",
             f"Total fetched: {response.total_fetched}",
             f"Processed (with attachments): {response.processed}",

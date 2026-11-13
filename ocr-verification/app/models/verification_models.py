@@ -83,8 +83,8 @@ class LocalExtractRequest(BaseModel):
 
 class BatchVerifyRequest(BaseModel):
     companyId: str
-    modifiedDate: str  # ISO date/datetime accepted by Finance API
     periodId: int
+    modifiedDate: Optional[str] = None  # ISO date/datetime; omit to fetch all for period
     force: bool = True
 
 
@@ -101,7 +101,7 @@ class BatchTransactionOutcome(BaseModel):
 class BatchVerifyResponse(BaseModel):
     companyId: str
     periodId: int
-    modifiedDate: str
+    modifiedDate: Optional[str] = None
     total_fetched: int = 0
     processed: int = 0
     completed: int = 0

@@ -50,7 +50,6 @@ print(
             "entryStatus": payload.get("entryStatus"),
             "voucherType": payload.get("voucherType"),
             "attachments": payload.get("attachments"),
-            "isTransactionVerifyByOCR": payload.get("isTransactionVerifyByOCR"),
         },
         indent=2,
     )

@@ -10,7 +10,8 @@ def test_build_verified_update_payload_appends_ocr_to_narration():
         "isTransactionVerifyByOCR": False,
     }
     payload = service.build_verified_update_payload(original)
-    assert payload["isTransactionVerifyByOCR"] is True
+    # Flag is left unchanged for now; only narration is updated
+    assert payload["isTransactionVerifyByOCR"] is False
     assert payload["narration"].strip().endswith("OCR")
     assert "sdf" in payload["narration"]
 
@@ -24,3 +25,4 @@ def test_build_verified_update_payload_does_not_duplicate_ocr():
     }
     payload = service.build_verified_update_payload(original)
     assert payload["narration"].count("OCR") == 1
+    assert payload["isTransactionVerifyByOCR"] is False

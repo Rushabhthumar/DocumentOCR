@@ -3,14 +3,29 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import __version__
 from app.api.ocr_controller import router as ocr_router
 from app.api.verification_controller import router as verification_router
+from app.auth_context import clear_request_auth, set_request_auth
 from app.config import get_settings
 from app.services.history_service import HistoryService
+
+
+class ForwardAuthMiddleware(BaseHTTPMiddleware):
+    """Capture Angular Authorization / AppId and use them for Finance/File API calls."""
+
+    async def dispatch(self, request: Request, call_next):
+        authorization = request.headers.get("authorization") or request.headers.get("Authorization")
+        app_id = request.headers.get("appid") or request.headers.get("AppId")
+        set_request_auth(authorization, app_id)
+        try:
+            return await call_next(request)
+        finally:
+            clear_request_auth()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +62,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(ForwardAuthMiddleware)
     app.include_router(verification_router)
     app.include_router(ocr_router)
 

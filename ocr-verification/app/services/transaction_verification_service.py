@@ -25,6 +25,15 @@ from app.validators.amount_validator import normalize_amount
 
 logger = logging.getLogger(__name__)
 
+_FIELD_LABELS = {
+    "amount": "Amount",
+    "date": "Date",
+    "documentDate": "Date",
+    "invoiceDate": "Date",
+    "partyName": "Party name",
+    "description": "Description",
+}
+
 
 class TransactionVerificationService:
     def __init__(
@@ -183,22 +192,24 @@ class TransactionVerificationService:
 
             status_updated = False
             verified_flag_set = False
-            message = f"Verification finished with decision {decision.value}"
+            errors: list[str] = []
 
             if decision == VerificationDecision.VERIFIED:
                 try:
                     self.transaction_service.mark_verified_by_ocr(transaction_id, raw_txn)
                     status_updated = True
                     verified_flag_set = True
-                    message = (
-                        f"Verified. Set {self.settings.verified_flag_field}="
-                        f"{self.settings.verified_flag_value}"
-                    )
+                    message = "Verified. Appended OCR to narration."
                 except Exception as exc:  # noqa: BLE001
                     decision = VerificationDecision.MANUAL_REVIEW
                     warnings.append(f"Verification matched but status update failed: {exc}")
-                    message = "Matched fields but failed to update transaction flag"
+                    message = f"Matched fields but failed to update transaction: {exc}"
+                    errors = [message]
                     status_updated = False
+            else:
+                reasons = self._failure_reasons(comparisons, warnings, decision)
+                message = "; ".join(reasons) if reasons else f"Decision {decision.value}"
+                errors = list(reasons)
 
             result = VerificationResult(
                 transaction_id=transaction_id,
@@ -209,6 +220,7 @@ class TransactionVerificationService:
                 documents=doc_results,
                 field_comparisons=comparisons,
                 warnings=warnings,
+                errors=errors,
                 message=message,
             )
             self.history_service.save(result)
@@ -217,6 +229,50 @@ class TransactionVerificationService:
             for binary in temp_docs:
                 self.file_service.cleanup(binary)
             lock.release()
+
+    @staticmethod
+    def _failure_reasons(
+        comparisons: list[FieldComparisonResult],
+        warnings: list[str],
+        decision: VerificationDecision,
+    ) -> list[str]:
+        """Build clear human-readable failure reasons (amount/date/party mismatch, etc.)."""
+        reasons: list[str] = []
+        for cmp in comparisons:
+            label = _FIELD_LABELS.get(cmp.field_name, cmp.field_name)
+            if cmp.status == "MISMATCH":
+                reasons.append(
+                    f"{label} mismatch: expected {cmp.expected}, document {cmp.extracted}"
+                )
+            elif cmp.status == "CONFLICT":
+                detail = cmp.explanation or cmp.extracted or "conflicting values"
+                reasons.append(f"{label} conflict: {detail}")
+            elif cmp.status == "INSUFFICIENT_DATA":
+                reasons.append(
+                    f"{label} missing: {cmp.explanation or 'not found on transaction or document'}"
+                )
+            elif cmp.status == "AMBIGUOUS":
+                reasons.append(
+                    f"{label} ambiguous: {cmp.explanation or 'could not uniquely determine value'}"
+                )
+
+        extra_keywords = (
+            "conflicting document",
+            "low confidence",
+            "could not uniquely match",
+            "status update failed",
+            "supporting documents",
+            "extraction failed",
+        )
+        for warning in warnings:
+            lowered = warning.lower()
+            if any(key in lowered for key in extra_keywords):
+                if warning not in reasons:
+                    reasons.append(warning)
+
+        if not reasons:
+            reasons.append(f"Verification requires review ({decision.value})")
+        return reasons
 
     def _compare_all(
         self,

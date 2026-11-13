@@ -108,6 +108,8 @@ def test_amount_mismatch_does_not_update_status(service):
     }
     assert result.status_updated is False
     txn.mark_verified_by_ocr.assert_not_called()
+    assert "Amount mismatch" in result.message
+    assert any("Amount mismatch" in e for e in result.errors)
 
 
 def test_missing_file_ids(service):

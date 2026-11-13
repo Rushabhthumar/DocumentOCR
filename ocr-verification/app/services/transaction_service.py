@@ -44,25 +44,37 @@ class TransactionService:
         *,
         company_id: str,
         period_id: int,
-        modified_date: str,
+        modified_date: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """
-        GET /Transactions?periodId=&companyId=&modifiedDate=
+        POST /Transactions/GetAll  (same as Angular getAllTransactions)
+        Body: { companyId, periodId, modifiedDate? }
         Normalizes common list response shapes into a list of transaction dicts.
         """
         url = f"{self.settings.finance_api_base_url.rstrip('/')}{self.settings.transaction_list_path}"
-        params = {
+        payload: dict[str, Any] = {
             "periodId": period_id,
             "companyId": company_id,
-            "modifiedDate": modified_date,
         }
+        if modified_date:
+            payload["modifiedDate"] = modified_date
         owns_client = self._client is None
         client = self._get_client()
         try:
-            response = client.get(url, params=params)
+            logger.info("Batch list POST %s payload=%s", url, payload)
+            response = client.post(url, json=payload)
+            logger.info("Batch list response status=%s", response.status_code)
+            if response.status_code == 401:
+                raise PermissionError(
+                    "Finance GetAll returned 401 Unauthorized. "
+                    "Pass Authorization (and AppId if required) header when calling /batch, "
+                    "or set API_AUTH_TOKEN in .env for local Swagger debugging."
+                )
             response.raise_for_status()
             data = response.json()
-            return self._normalize_transaction_list(data)
+            items = self._normalize_transaction_list(data)
+            logger.info("Batch list normalized count=%s", len(items))
+            return items
         finally:
             if owns_client:
                 client.close()
@@ -127,12 +139,10 @@ class TransactionService:
 
     def build_verified_update_payload(self, original_payload: dict[str, Any]) -> dict[str, Any]:
         """
-        Use the exact GET transaction response, then:
-        - set isTransactionVerifyByOCR=true
-        - append "OCR" to narration (without duplicating if already present)
+        Use the exact GET transaction response, then append "OCR" to narration
+        (without duplicating if already present). Does not set isTransactionVerifyByOCR.
         """
         payload = copy.deepcopy(original_payload)
-        payload[self.settings.verified_flag_field] = self.settings.verified_flag_value
 
         existing_narration = payload.get("narration")
         narration = "" if existing_narration is None else str(existing_narration)
@@ -152,7 +162,7 @@ class TransactionService:
 
     def mark_verified_by_ocr(self, transaction_id: str, original_payload: dict[str, Any]) -> dict[str, Any]:
         """
-        PUT the existing transaction GET response with OCR verification flag and narration marker.
+        PUT the existing transaction GET response with OCR appended to narration.
         """
         payload = self.build_verified_update_payload(original_payload)
 
@@ -163,10 +173,8 @@ class TransactionService:
 
             debug_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
             logger.info(
-                "Prepared PUT %s with %s=%s narration=%r (saved %s)",
+                "Prepared PUT %s narration=%r (saved %s)",
                 transaction_id,
-                self.settings.verified_flag_field,
-                self.settings.verified_flag_value,
                 payload.get("narration"),
                 debug_path,
             )

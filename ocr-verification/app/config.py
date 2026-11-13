@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     finance_api_base_url: str = "https://finance.api.gurukul.ninja"
     transaction_get_path: str = "/Transactions/GetTransaction/{transaction_id}"
     transaction_update_path: str = "/Transactions/{transaction_id}?isMigration=false"
-    # List endpoint: /Transactions?periodId=&companyId=&modifiedDate=
-    transaction_list_path: str = "/Transactions"
+    # List endpoint used by Angular getAllTransactions: POST /Transactions/GetAll
+    transaction_list_path: str = "/Transactions/GetAll"
 
     file_api_base_url: str = "https://files.api.gurukul.ninja"
     file_download_path: str = "/File/DownloadOCR/{file_id}"
@@ -80,9 +80,27 @@ class Settings(BaseSettings):
         return path
 
     def auth_headers(self) -> dict[str, str]:
-        if not self.api_auth_token:
-            return {}
-        return {self.api_auth_header: self.api_auth_token}
+        """
+        Prefer the Authorization / AppId forwarded from the Angular request;
+        fall back to API_AUTH_TOKEN from .env for local/Swagger use.
+        """
+        from app.auth_context import get_request_app_id, get_request_authorization
+
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        request_auth = get_request_authorization()
+        token = request_auth or self.api_auth_token
+        if token:
+            headers[self.api_auth_header] = token
+
+        app_id = get_request_app_id()
+        if app_id:
+            headers["AppId"] = app_id
+
+        return headers
 
 
 @lru_cache

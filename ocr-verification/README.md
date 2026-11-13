@@ -5,7 +5,7 @@ Local FastAPI service that verifies finance transactions against supporting docu
 - Digital PDF text extraction (`pypdfium2`, non-AGPL)
 - Local OCR for scanned pages (PaddleOCR / optional PP-StructureV3)
 - Amount / date / party / description comparison with `Decimal` arithmetic
-- Status update **only** when decision is `VERIFIED`, by setting `isTransactionVerifyByOCR: true` on the existing transaction PUT payload
+- Status update **only** when decision is `VERIFIED`, by appending `OCR` to narration on the existing transaction PUT payload
 
 Angular integration can be added later. For now, call the APIs with a transaction ID.
 
@@ -97,6 +97,8 @@ Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 ```http
 POST http://127.0.0.1:8000/api/transaction-verification/batch
 Content-Type: application/json
+Authorization: Bearer <same token as Finance Angular>
+AppId: <same client id as Finance Angular>
 
 {
   "companyId": "60654665e169c893412eae7e",
@@ -105,11 +107,13 @@ Content-Type: application/json
 }
 ```
 
+Angular Transaction grid: toolbar **OCR Document Verification** button calls this endpoint with the logged-in user's bearer token.
+
 Flow:
-1. Calls Finance `GET /Transactions?periodId=&companyId=&modifiedDate=`
+1. Calls Finance `POST /Transactions/GetAll` with `{ companyId, periodId, modifiedDate }` (same as Angular `getAllTransactions`)
 2. For each transaction with attachments, downloads all `fileId`s via `/File/DownloadOCR/{fileId}`
 3. Extracts + matches amount/date
-4. PUT updates `isTransactionVerifyByOCR=true` and appends `OCR` to narration only when verified
+4. PUT appends `OCR` to narration only when verified (does not set `isTransactionVerifyByOCR` for now)
 5. Skips PUT on failure/error and continues
 6. Emails summary to `rutvik.d@gurukul.org` using **free Gmail SMTP only** (no paid email API). If SMTP is disabled, a draft is saved under `temp/last_batch_email.txt`.
 
@@ -133,7 +137,7 @@ Create the App Password at: Google Account → Security → 2-Step Verification 
 3. Service loads transaction + attachment `fileId`s from Finance API, downloads files, extracts, compares, and only then may PUT:
 
 ```json
-{ "...existing transaction fields...": "...", "isTransactionVerifyByOCR": true, "narration": "... OCR" }
+{ "...existing transaction fields...": "...", "narration": "... OCR" }
 ```
 
 ### 10) Run tests
@@ -156,7 +160,7 @@ python scripts\demo_extract_samples.py
 - UTR statements: select payment row by **amount + payment date** (UTR used as extra hint when present)
 - Conflicting document amounts => `MANUAL_REVIEW`
 - Low OCR confidence / ambiguous party or description => `MANUAL_REVIEW`
-- Only `VERIFIED` updates `isTransactionVerifyByOCR`
+- Only `VERIFIED` appends `OCR` to narration via PUT
 - Concurrent verify for same transaction is blocked
 - Temp files cleaned after processing
 
