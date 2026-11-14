@@ -343,7 +343,71 @@ class OcrService:
         # Amount-ish OCR garbage near TOTAL/BAL
         if re.search(r"(?i)\b(?:total|bal|amount)\b.{0,20}\d+[oOlI]\d*", text):
             return True
+        # Devanagari / heavily fragmented scans (Hindi vegetable bills etc.)
+        if re.search(r"[\u0900-\u097F]", text) or text.count("\n") >= 25 and len(text) < 900:
+            return True
         return False
+
+    def _ocr_crop_text(self, crop: Image.Image) -> str:
+        """Light OCR on a date/total crop (no nested structure/TrOCR recursion)."""
+        try:
+            result = self.run_ocr(crop, preprocess=True, use_structure=False, use_trocr=False)
+            text = result.text or ""
+            # Optional TrOCR on tiny amount/date crops when digits still missing
+            if self.settings.enable_trocr_fallback and not re.search(r"\d{3,}", text):
+                alt = self._trocr_recognize(crop)
+                if alt:
+                    text = f"{text}\n{alt}".strip()
+            return text
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Region crop OCR failed: %s", exc)
+            return ""
+
+    def enrich_with_region_crops(self, image: Image.Image, parsed: OcrPageResult) -> OcrPageResult:
+        """
+        Re-OCR header (dates) and bottom-right (totals) crops.
+        Full-page English OCR often misses handwritten totals on Hindi/cash bills;
+        these focused crops recover values like 7790 / 13465 / 6-Apr-26.
+        """
+        if image is None:
+            return parsed
+        rgb = image.convert("RGB") if image.mode != "RGB" else image
+        w, h = rgb.size
+        if w < 80 or h < 80:
+            return parsed
+
+        regions = {
+            "header": (0, 0, w, int(h * 0.30)),
+            "total_br": (int(w * 0.45), int(h * 0.55), w, h),
+            "date_tr": (int(w * 0.50), 0, w, int(h * 0.28)),
+        }
+        extras: list[str] = []
+        for name, box in regions.items():
+            left, top, right, bottom = box
+            if right - left < 40 or bottom - top < 30:
+                continue
+            crop = rgb.crop((left, top, right, bottom))
+            text = self._ocr_crop_text(crop)
+            if not text or not text.strip():
+                continue
+            body = text.strip()
+            # Help amount extractors: bare handwritten totals often lack a TOTAL label
+            if name.startswith("total") and re.search(r"\d{3,}", body):
+                if not re.search(r"(?i)\btotal\b", body):
+                    body = f"TOTAL {body}"
+            extras.append(f"[{name}]\n{body}")
+
+        if not extras:
+            return parsed
+
+        block = "\n\n--- REGION_OCR ---\n" + "\n\n".join(extras)
+        # Avoid duplicating identical merges
+        if "--- REGION_OCR ---" in (parsed.text or ""):
+            return parsed
+        parsed.text = (parsed.text or "") + block
+        parsed.engine = f"{parsed.engine}+regions"
+        parsed.warnings.append(f"Merged {len(extras)} date/total region OCR crop(s)")
+        return parsed
 
     @staticmethod
     def _is_better_ocr_replacement(original: str, alternate: str) -> bool:

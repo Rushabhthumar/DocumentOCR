@@ -57,13 +57,45 @@ def extract_invoice_fields(text: str, page_number: int = 1, confidence: float = 
             # Glued OCR date like 8-112026 mistaken for invoice no
             doc_no = None
 
+    # Prefer Invoice Date over Due Date. OCR often emits "lnvoice" and "07 t04/2026".
     doc_date = normalize_ocr_date(
         _find(
-            r"(?i)Invoice\s*Date\s*[:\-]?\s*([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4})",
+            r"(?i)l?nvoice\s*Date\s*[:\-]?\s*([0-9]{1,2}\s*[tT./\-]\s*[0-9]{1,2}[./\-][0-9]{2,4})",
             compact,
         )
-        or _find(r"(?i)\bDate\s*[:\-]?\s*([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4})", compact)
+        or _find(
+            r"(?i)(?:bill\s*date|dated)\s*[:\-]?\s*"
+            r"([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4}"
+            r"|[0-9]{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+[0-9]{2,4})",
+            compact,
+        )
     )
+    # Never take Due Date as document date
+    if not doc_date:
+        due = _find(
+            r"(?i)due\s*date\s*[:\-]?\s*([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4})",
+            compact,
+        )
+        generic = _find(
+            r"(?i)\bDate\s*[:\-]?\s*"
+            r"([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4}"
+            r"|[0-9]{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+[0-9]{2,4})",
+            compact,
+        )
+        # Printed "Dated 6-Apr-26" beside invoice no (Satyam bill layout)
+        if not generic:
+            generic = _find(
+                r"(?i)\bdated\b\s*[:\-]?\s*"
+                r"([0-9]{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+[0-9]{2,4})",
+                compact,
+            )
+        if not generic:
+            generic = _find(
+                r"(?i)\b([0-9]{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+[0-9]{2,4})\b",
+                compact,
+            )
+        if generic and (not due or generic != due):
+            doc_date = normalize_ocr_date(generic)
 
     # Prefer explicit Gurukul / buyer name over adjacent HSN labels
     party = _find(

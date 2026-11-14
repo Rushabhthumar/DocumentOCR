@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Optional
 
 from app.models.extraction_models import FieldValue
-from app.services.extractors.amount_total import extract_grand_total
+from app.services.extractors.amount_total import _looks_like_phone_or_id, extract_grand_total
 from app.services.extractors.ocr_date import normalize_ocr_date
 from app.validators.amount_validator import normalize_amount
 
@@ -34,11 +34,16 @@ _AMOUNT_LABEL_PATTERNS = [
 
 _DATE_LABEL_PATTERNS = [
     (
-        r"(?i)(?:invoice\s*date|bill\s*date|voucher\s*date|receipt\s*date|"
+        r"(?i)l?nvoice\s*date\s*[:\-]?\s*"
+        r"(\d{1,2}\s*[tT./\-]\s*\d{1,2}[./\-]\d{2,4})"
+    ),
+    (
+        r"(?i)(?:bill\s*date|voucher\s*date|receipt\s*date|"
         r"challan\s*date|document\s*date|txn\s*date|transaction\s*date|"
         r"payment\s*date|pymt_date|dated)\s*[:\-]?\s*(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})"
     ),
-    r"(?i)\bdate\s*[:\-]?\s*(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})",
+    # Bare Date — but skip when the label is Due Date (handled by negative lookbehind)
+    r"(?i)(?<!due\s)\bdate\s*[:\-]?\s*(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})",
 ]
 
 _DOC_NO_PATTERNS = [
@@ -98,9 +103,12 @@ def _pick_fallback_amount(compact: str) -> Optional[Decimal]:
         if "." not in raw and len(digits) >= 8:
             continue
         amount = normalize_amount(raw)
-        if amount is None or amount < Decimal("1.00"):
+        # Ignore tiny OCR noise (14, 11) — bill totals in this domain are almost never < 100
+        if amount is None or amount < Decimal("100.00"):
             continue
         if amount > Decimal("100000000"):
+            continue
+        if _looks_like_phone_or_id(amount, compact):
             continue
         # Qty-like decimals (5104.87 Sqf) — skip when unit words follow
         window = compact[match.start() : min(len(compact), match.end() + 12)]
@@ -113,10 +121,6 @@ def _pick_fallback_amount(compact: str) -> Optional[Decimal]:
     cutoff = int(len(compact) * 0.6)
     bottom = [a for pos, a in candidates if pos >= cutoff]
     pool = bottom or [a for _, a in candidates]
-    # Ignore tiny line values when a much larger total exists
-    large = [a for a in pool if a >= Decimal("100.00")]
-    if large:
-        pool = large
     # Among remaining, prefer the largest plausible total (typical bill total)
     return max(pool)
 

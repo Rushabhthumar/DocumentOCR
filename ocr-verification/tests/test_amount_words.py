@@ -9,6 +9,17 @@ from app.validators.date_validator import normalize_date
 def test_words_to_amount_ocr_misspellings():
     assert words_to_amount("seveerteen Jhousand rwo hundred ony") == Decimal("17200.00")
     assert words_to_amount("froordeen thousand fourteen only") == Decimal("14014.00")
+    assert words_to_amount("Twenty Seven Thousand Nine Hundred Sixty Rupees") == Decimal(
+        "27960.00"
+    )
+
+
+def test_extract_amount_keeps_tens_after_hundred():
+    text = (
+        "Total Amount (in words) Twenty Seven Thousand Nine Hundred Sixty Rupees "
+        "terms and Conditions"
+    )
+    assert extract_amount_from_words(text) == Decimal("27960.00")
 
 
 def test_grand_total_prefers_amount_in_words_when_digits_wrong():
@@ -21,6 +32,37 @@ def test_ocr_date_repairs():
     assert normalize_date("31/10/226").isoformat() == "2026-10-31"
     assert normalize_ocr_date("10.11.2026") == "10/11/2026"
     assert normalize_date("08/11/26").isoformat() == "2026-11-08"
+    assert normalize_date("07 t04/2026").isoformat() == "2026-04-07"
+    assert normalize_date("6-Apr-26").isoformat() == "2026-04-06"
+    assert normalize_date("01-4.26").isoformat() == "2026-04-01"
+    assert normalize_date("01-4/26").isoformat() == "2026-04-01"
+    assert normalize_date("Date. 184126").isoformat() == "2026-04-18"
+    assert normalize_date("Date.0.20626").isoformat() == "2026-06-02"
+
+
+def test_cash_memo_equals_paise_amount():
+    from app.validators.amount_validator import normalize_amount
+    from app.services.extractors.amount_total import extract_grand_total
+
+    assert normalize_amount("3900=00") == Decimal("3900.00")
+    assert normalize_amount("3900=0") == Decimal("3900.00")
+    amount, _ = extract_grand_total("TOTAL 3900=0\nFor, Sumit Enterprises")
+    assert amount == Decimal("3900.00")
+
+
+def test_invoice_prefers_invoice_date_not_due_date():
+    from app.services.extractors.invoice_extractor import extract_invoice_fields
+
+    text = """
+    INVOICE
+    Due Date 14/04/2026
+    Invoice Date 07 t04/2026
+    Total Amount (in words) Twenty Seven Thousand Nine Hundred Sixty Rupees
+    27,960
+    """
+    parsed = extract_invoice_fields(text, confidence=0.9)
+    assert parsed["fields"]["documentDate"].value in {"07/04/2026", "07-04-2026"}
+    assert parsed["fields"]["amount"].value == "27960.00"
 
 
 def test_extract_amount_from_words_near_total_label():

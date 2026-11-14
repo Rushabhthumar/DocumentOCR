@@ -54,6 +54,8 @@ _OCR_FIXES = {
     "jhousand": "thousand",
     "lakh": "lakh",
     "lac": "lakh",
+    "indian": "",
+    "ldian": "",
     "only": "",
     "rupees": "",
     "rupee": "",
@@ -81,9 +83,19 @@ _SCALES = {
     "crores": 10_000_000,
 }
 
+# Allow trailing tens/ones after hundred/thousand (…Nine Hundred Sixty Only)
+_WORD_TAIL = (
+    r"(?:hundred|thousand|lakh|lakhs|crore|crores)"
+    r"(?:\s+(?:and\s+)?"
+    r"(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)?"
+    r"(?:[\s\-]*(?:one|two|three|four|five|six|seven|eight|nine))?"
+    r")?"
+    r"(?:\s+only)?"
+)
+
 _WORDS_BLOCK = re.compile(
-    r"(?i)(?:rupees?|rs\.?|inr)?\s*[:=]?\s*"
-    r"((?:[a-z]{2,}[\s\-]+){1,16}(?:hundred|thousand|lakh|lakhs|crore|crores|only))"
+    rf"(?i)(?:rupees?|rs\.?|inr|indian\s+rupees?)?\s*[:=]?\s*"
+    rf"((?:[a-z]{{2,}}[\s\-]+){{1,16}}{_WORD_TAIL})"
 )
 
 
@@ -99,7 +111,7 @@ def words_to_amount(text: str) -> Optional[Decimal]:
     """
     if not text:
         return None
-    raw = re.sub(r"(?i)\b(rupees?|rs\.?|inr|only|/)\b", " ", text)
+    raw = re.sub(r"(?i)\b(rupees?|rs\.?|inr|only|/|indian)\b", " ", text)
     raw = re.sub(r"[^a-zA-Z\s\-]", " ", raw)
     tokens = [_normalize_token(t) for t in re.split(r"[\s\-]+", raw) if t.strip()]
     tokens = [t for t in tokens if t]
@@ -128,7 +140,6 @@ def words_to_amount(text: str) -> Optional[Decimal]:
         elif token in {"and", "a"}:
             continue
         else:
-            # Unknown token — abort if we never saw a number phrase
             continue
     total += current
     if not saw_number or total <= 0:
@@ -141,12 +152,12 @@ def extract_amount_from_words(text: str) -> Optional[Decimal]:
     if not text:
         return None
     compact = re.sub(r"\s+", " ", text)
-    # Prefer phrases near total / amount labels
+    # Prefer phrases near total / amount labels — do NOT stop at first "hundred"
     labeled = re.search(
         r"(?i)(?:total|amount|grand\s*total|bill\s*amount|invoice\s*amount|"
-        r"amount\s*in\s*words|in\s*words)\s*[:\-]?\s*"
-        r"(?:rupees?|rs\.?)?\s*"
-        r"([A-Za-z][A-Za-z\s\-]{8,120}?(?:hundred|thousand|lakh|lakhs|crore|only))",
+        r"amount\s*(?:in\s*)?words|in\s*words|indian\s+rupees?)\s*[:\-]?\s*"
+        r"(?:rupees?|rs\.?|indian\s+rupees?)?\s*"
+        rf"([A-Za-z][A-Za-z\s\-]{{8,160}}?{_WORD_TAIL})",
         compact,
     )
     candidates: list[str] = []
@@ -154,9 +165,8 @@ def extract_amount_from_words(text: str) -> Optional[Decimal]:
         candidates.append(labeled.group(1))
     for match in _WORDS_BLOCK.finditer(compact):
         candidates.append(match.group(1))
-    # Also try last ~200 chars (totals often at bottom of cash bills)
-    tail = compact[-220:]
-    candidates.append(tail)
+    # Also try last ~250 chars (totals often at bottom of cash bills)
+    candidates.append(compact[-250:])
 
     best: Optional[Decimal] = None
     for cand in candidates:

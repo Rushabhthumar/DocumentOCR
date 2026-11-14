@@ -82,6 +82,40 @@ class ExtractionService:
             )
         )
 
+    def _text_layer_needs_ocr(self, text: str) -> bool:
+        """Force image OCR when the PDF text layer is missing date/amount or looks broken."""
+        if not text or not text.strip():
+            return True
+        if not self.pdf_service.is_meaningful_text(text):
+            return True
+        from app.validators.date_validator import normalize_date
+
+        has_full_date = bool(
+            re.search(
+                r"\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}"
+                r"|\d{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+\d{2,4}",
+                text,
+            )
+        )
+        # Broken layers often keep "6-A" / "Date." without a year
+        if not has_full_date:
+            total, _ = extract_grand_total(text)
+            # Invoice-like page without a parseable date → re-OCR
+            if re.search(r"(?i)invoice|bill|cash|gstin|total|dated", text):
+                return True
+            if total is None:
+                return True
+        # Confirm any candidate date actually parses
+        if has_full_date:
+            snippets = re.findall(
+                r"\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}"
+                r"|\d{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+\d{2,4}",
+                text,
+            )
+            if snippets and not any(normalize_date(s) for s in snippets[:6]):
+                return True
+        return False
+
     def _run_page_ocr(self, image, *, page_hint_text: str = ""):
         """
         Run PaddleOCR once, then selectively enrich with structure tables / TrOCR.
@@ -122,6 +156,19 @@ class ExtractionService:
                 self.image_service.preprocess(image, for_handwriting=True).convert("RGB"),
                 base,
             )
+
+        # Focused header/total crops — recovers handwritten Hindi bills & cash memos
+        total_after, _ = extract_grand_total(base.text or "")
+        needs_regions = (
+            total_after is None
+            or self.ocr_service._looks_handwritten_or_noisy(base)
+            or not re.search(
+                r"\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+\d{2,4}",
+                base.text or "",
+            )
+        )
+        if needs_regions:
+            base = self.ocr_service.enrich_with_region_crops(image, base)
         return base
 
     def extract_file(
@@ -146,12 +193,33 @@ class ExtractionService:
                 for page in pages:
                     text = page.text or ""
                     conf = 1.0 if page.mode == PageExtractionMode.TEXT else 0.0
-                    if page.mode == PageExtractionMode.OCR:
-                        if page.image is None:
+                    force_ocr = page.mode == PageExtractionMode.OCR or self._text_layer_needs_ocr(
+                        text
+                    )
+                    if page.mode == PageExtractionMode.FAILED and not force_ocr:
+                        errors.append(f"Page {page.page_number}: failed to process")
+                        continue
+                    if force_ocr:
+                        image = page.image
+                        if image is None:
+                            try:
+                                doc = self.pdf_service.open_document(path)
+                                try:
+                                    image = self.pdf_service.render_page(
+                                        doc[page.page_number - 1], scale=2.75
+                                    )
+                                finally:
+                                    doc.close()
+                            except Exception as exc:  # noqa: BLE001
+                                errors.append(
+                                    f"Page {page.page_number}: OCR render failed: {exc}"
+                                )
+                                continue
+                        if image is None:
                             errors.append(f"Page {page.page_number}: OCR required but no image")
                             continue
                         try:
-                            ocr_result = self._run_page_ocr(page.image, page_hint_text=text)
+                            ocr_result = self._run_page_ocr(image, page_hint_text=text)
                             text = ocr_result.text
                             conf = ocr_result.average_confidence
                             warnings.extend(
@@ -161,9 +229,6 @@ class ExtractionService:
                             errors.append(f"Page {page.page_number}: OCR failed: {exc}")
                             warnings.extend(page.warnings)
                             continue
-                    elif page.mode == PageExtractionMode.FAILED:
-                        errors.append(f"Page {page.page_number}: failed to process")
-                        continue
                     page_texts[page.page_number] = text
                     page_confidences[page.page_number] = conf
                     warnings.extend(page.warnings)
@@ -316,12 +381,16 @@ class ExtractionService:
             elif page_type == DocumentType.GRN:
                 parsed = extract_grn_fields(text, page_number=page_no, confidence=conf)
                 # GRN has no payable total — never take quantity as amount.
-                # Also do not overwrite bill party/date/doc-no with GRN boilerplate.
+                # Keep supplier invoice date as fallback when bill page OCR fails.
                 grn_fields = {
                     k: v
                     for k, v in parsed["fields"].items()
-                    if k not in {"amount", "partyName", "documentDate", "documentNumber"}
+                    if k not in {"amount", "partyName", "documentNumber"}
                 }
+                # Only fill date from GRN if we do not already have one
+                if merged_fields.get("documentDate") and merged_fields["documentDate"].value:
+                    grn_fields.pop("documentDate", None)
+                    grn_fields.pop("invoiceDate", None)
                 self._merge_field_map(merged_fields, grn_fields)
                 result.items.extend(parsed["items"])
                 result.warnings.extend(parsed["warnings"])
@@ -391,6 +460,24 @@ class ExtractionService:
                 except Exception:  # noqa: BLE001
                     combined_total = None
 
+        # Last-resort amount from generic heuristics on bill pages only
+        if combined_total is None and combined_bill_text.strip():
+            generic_amt = extract_generic_fields(combined_bill_text, confidence=0.5)
+            g_amount = generic_amt["fields"].get("amount")
+            if g_amount and g_amount.value:
+                try:
+                    combined_total = Decimal(str(g_amount.value))
+                    combined_src = g_amount.source or "generic_bill_fallback"
+                    result.warnings.append(
+                        f"Amount fell back to generic bill heuristic: {combined_total}"
+                    )
+                except Exception:  # noqa: BLE001
+                    combined_total = None
+            if not (merged_fields.get("documentDate") and merged_fields["documentDate"].value):
+                g_date = generic_amt["fields"].get("documentDate")
+                if g_date and g_date.value:
+                    merged_fields["documentDate"] = g_date
+
         resolved = self._resolve_grand_total(page_totals, result)
         # Prefer combined bill-text total when it is stronger / present
         if combined_total is not None:
@@ -430,7 +517,7 @@ class ExtractionService:
         }
         result.metadata = {
             **(result.metadata or {}),
-            "extractor_build": "2026-11-13-amount-words-v2",
+            "extractor_build": "2026-11-13-amount-words-v3",
             "amount_source": (merged_fields.get("amount").source if merged_fields.get("amount") else None),
         }
 

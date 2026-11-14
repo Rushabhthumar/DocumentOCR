@@ -22,12 +22,14 @@ def normalize_amount(value) -> Optional[Decimal]:
     if not text:
         return None
     text = text.replace("Rs.", "").replace("Rs", "").replace("INR", "")
+    # Handwritten cash memos: 3900=00 / 3900=0 / 2600=00
+    text = re.sub(r"(\d)\s*=\s*0{1,2}\b", r"\1.00", text)
     text = _CURRENCY_RE.sub("", text)
     text = text.replace("/-", "")
     try:
         return Decimal(text).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except InvalidOperation:
-        match = _AMOUNT_TOKEN_RE.search(str(value))
+        match = _AMOUNT_TOKEN_RE.search(text) or _AMOUNT_TOKEN_RE.search(str(value))
         if not match:
             return None
         try:

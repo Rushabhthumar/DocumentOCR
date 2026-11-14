@@ -32,9 +32,46 @@ class PdfService:
 
     @staticmethod
     def is_meaningful_text(text: str, min_alnum: int = 40) -> bool:
+        """
+        True only for usable digital text layers.
+        Phone-scan PDFs often embed garbage OCR (single-char lines, mojibake);
+        those must fall through to real image OCR.
+        """
         if not text:
             return False
-        return len(_ALNUM_RE.findall(text)) >= min_alnum
+        if len(_ALNUM_RE.findall(text)) < min_alnum:
+            return False
+
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return False
+        short_lines = sum(1 for ln in lines if len(ln) <= 2)
+        if len(lines) >= 8 and (short_lines / len(lines)) >= 0.40:
+            return False
+
+        words = re.findall(r"[A-Za-z]{3,}", text)
+        if len(words) < 8:
+            return False
+
+        # Control chars / private-use junk from broken scan text layers
+        noise = sum(1 for c in text if ord(c) < 32 and c not in "\r\n\t")
+        if noise >= 2:
+            return False
+
+        # Slash/backslash salad typical of failed phone OCR layers
+        if text.count("\\") + text.count("|") >= 12:
+            return False
+
+        # High weird Latin-1 / box-drawing without enough real words
+        weird = sum(
+            1
+            for c in text
+            if ord(c) > 127 and not (0x0900 <= ord(c) <= 0x097F)
+        )
+        if weird >= 30 and len(words) < 20:
+            return False
+
+        return True
 
     def open_document(self, path: str | Path) -> pdfium.PdfDocument:
         return pdfium.PdfDocument(str(path))
@@ -86,12 +123,12 @@ class PdfService:
                         warnings.append(
                             "Insufficient selectable text; page will be OCR processed"
                         )
-                        image = self.render_page(page, scale=2.0)
+                        image = self.render_page(page, scale=2.75)
                 except Exception as exc:  # noqa: BLE001
                     mode = PageExtractionMode.OCR
                     warnings.append(f"Text extraction failed: {exc}")
                     try:
-                        image = self.render_page(page, scale=2.0)
+                        image = self.render_page(page, scale=2.75)
                     except Exception as render_exc:  # noqa: BLE001
                         mode = PageExtractionMode.FAILED
                         warnings.append(f"Page render failed: {render_exc}")

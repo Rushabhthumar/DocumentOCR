@@ -46,14 +46,34 @@ def extract_cash_memo_fields(text: str, page_number: int = 1, confidence: float 
         or _find(r"(?i)\bNo\.?\s*[:\-]?\s*([A-Z0-9]{1,10})\b", compact)
     )
 
-    doc_date = normalize_ocr_date(
-        _find(r"(?i)DATE\s*[:\-]?\s*([0-9]{1,2}[./\-tT\s(/]{1,12}[0-9./\-)]{2,10})", compact)
+    def _sane_ocr_date(raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        cleaned = normalize_ocr_date(raw)
+        if not cleaned:
+            return None
+        from app.validators.date_validator import normalize_date
+
+        parsed = normalize_date(cleaned) or normalize_date(raw)
+        # Glued OCR like Date.18412 → 18/04/12; reject ancient years from bill scans
+        if parsed is None or parsed.year < 2020:
+            return None
+        return cleaned
+
+    doc_date = _sane_ocr_date(
+        _find(r"(?i)DATE\s*[:\-]?\s*([0-9]{1,2}[./\-tT\s(/|]{1,12}[0-9./\-|)]{2,10})", compact)
         or _find(r"(?i)Date\s*[:\-]?\s*([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4})", compact)
+        or _find(r"(?i)\bDate\s*[.:\-]?\s*([0-9][0-9./\-|]{4,12})", compact)
     )
-    # Fallback: first plausible date token on the page
+    # Fallback: first plausible date token on the page (incl. 01-4.26 / 6-Apr-26)
     if not doc_date:
-        doc_date = normalize_ocr_date(
-            _find(r"\b([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4})\b", compact)
+        doc_date = _sane_ocr_date(
+            _find(
+                r"\b([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4}"
+                r"|[0-9]{1,2}-[0-9]{1,2}[./][0-9]{2,4}"
+                r"|[0-9]{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+[0-9]{2,4})\b",
+                compact,
+            )
         )
 
     party = _find(
@@ -87,7 +107,8 @@ def extract_cash_memo_fields(text: str, page_number: int = 1, confidence: float 
     amount_value, amount_source = extract_grand_total(text)
     if amount_value is None:
         total = (
-            _find(r"(?i)\bTotal\b\s*[:\-]?\s*(?:Rs\.?\s*)?(\d{2,9}(?:\.\d{1,2})?)", compact)
+            _find(r"(?i)\bTotal\b\s*[:\-]?\s*(?:Rs\.?\s*)?(\d{2,9}(?:\.\d{1,2})?|=0{1,2})", compact)
+            or _find(r"(?i)(\d{2,9}\s*=\s*0{1,2})\s*\bTotal\b", compact)
             or _find(r"(?i)\bBalance\b\s*[:\-]?\s*(?:Rs\.?\s*)?(\d{2,9}(?:\.\d{1,2})?)", compact)
             or _find(r"(?i)\bBAL\.?\b\s*[:\-]?\s*(?:Rs\.?\s*)?(\d{2,9}(?:\.\d{1,2})?)", compact)
         )

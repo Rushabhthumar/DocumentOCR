@@ -16,6 +16,7 @@ from app.models.verification_models import (
     VerificationResult,
 )
 from app.services.extraction_service import ExtractionService
+from app.services.extractors.ocr_fuzzy_match import amount_mentioned_in_ocr, date_mentioned_in_ocr
 from app.services.extractors.utr_extractor import payment_row_to_fields, select_matching_payment_row
 from app.services.file_service import FileService
 from app.services.history_service import HistoryService
@@ -320,6 +321,18 @@ class TransactionVerificationService:
             desc_field = extraction.fields.get("description")
 
             amount_val = normalize_amount(amount_field.value) if amount_field else None
+            # Drop absurd heuristic crumbs (14.00 / 11.00) that never match real bills
+            amount_src = (amount_field.source or "") if amount_field else ""
+            if (
+                amount_val is not None
+                and amount_val < Decimal("100")
+                and "heuristic" in amount_src
+            ):
+                amount_val = None
+                warnings.append(
+                    f"file {extraction.file_id}: ignored tiny heuristic amount "
+                    f"{amount_field.value if amount_field else None}"
+                )
             if amount_val is not None:
                 amount_candidates.append(
                     (extraction.file_id, amount_val, amount_field.confidence if amount_field else 0.0)
@@ -336,6 +349,62 @@ class TransactionVerificationService:
                 description_candidates.append(
                     (extraction.file_id, str(desc_field.value), desc_field.confidence)
                 )
+
+            # Fuzzy recovery: noisy Hindi/handwritten OCR often misses structured fields
+            # but still contains the transaction amount/date digits somewhere in raw text.
+            raw_blob = "\n".join(
+                [
+                    extraction.raw_text or "",
+                    *[(extraction.page_texts or {}).get(p) or "" for p in sorted(extraction.page_texts or {})],
+                ]
+            )
+            from app.models.extraction_models import FieldValue
+
+            # Handwritten bills often slip ₹1–5 or glue date digits; allow a small OCR window
+            fuzzy_amt_tol = max(self.settings.amount_tolerance_decimal, Decimal("5.00"))
+            if snapshot.amount is not None:
+                fuzzy_amt = amount_mentioned_in_ocr(
+                    raw_blob,
+                    snapshot.amount,
+                    tolerance=fuzzy_amt_tol,
+                )
+                if fuzzy_amt is not None:
+                    amount_candidates.append((extraction.file_id, fuzzy_amt, 0.72))
+                    warnings.append(
+                        f"file {extraction.file_id}: amount {fuzzy_amt} recovered from noisy OCR text"
+                    )
+                    prev = normalize_amount(
+                        extraction.fields["amount"].value
+                        if extraction.fields.get("amount")
+                        else None
+                    )
+                    if prev is None or abs(prev - snapshot.amount) > self.settings.amount_tolerance_decimal:
+                        extraction.fields["amount"] = FieldValue(
+                            value=str(fuzzy_amt),
+                            confidence=0.72,
+                            source="ocr_fuzzy_amount",
+                        )
+            if snapshot.date is not None:
+                fuzzy_date = date_mentioned_in_ocr(raw_blob, snapshot.date)
+                if fuzzy_date:
+                    date_candidates.append((extraction.file_id, fuzzy_date, 0.7))
+                    warnings.append(
+                        f"file {extraction.file_id}: date {fuzzy_date} recovered from noisy OCR text"
+                    )
+                    from app.validators.date_validator import normalize_date as _norm_date
+
+                    prev_day = (
+                        _norm_date(date_field.value)
+                        if date_field and date_field.value
+                        else None
+                    )
+                    txn_day = _norm_date(snapshot.date)
+                    if prev_day is None or (txn_day is not None and prev_day != txn_day):
+                        extraction.fields["documentDate"] = FieldValue(
+                            value=fuzzy_date,
+                            confidence=0.7,
+                            source="ocr_fuzzy_date",
+                        )
 
         # Prefer any extracted amount that matches the transaction (common when
         # multiple attachments include GRN + invoice with different printed totals).
@@ -354,27 +423,89 @@ class TransactionVerificationService:
                             f"transaction amount {snapshot.amount}"
                         )
                 else:
-                    unique_amounts = {str(a[1]) for a in amount_candidates}
-                    if len(unique_amounts) > 1:
+                    # One more pass over all raw texts before accepting mismatch
+                    joined = "\n".join(e.raw_text or "" for e in extractions)
+                    fuzzy = amount_mentioned_in_ocr(
+                        joined,
+                        snapshot.amount,
+                        tolerance=max(tol, Decimal("5.00")),
+                    )
+                    if fuzzy is not None:
+                        selected_amount = fuzzy
                         warnings.append(
-                            f"Conflicting document amounts found: {sorted(unique_amounts)}"
+                            f"Amount {fuzzy} recovered from combined OCR text against transaction"
                         )
-                        comparisons.append(
-                            FieldComparisonResult(
-                                field_name="amount",
-                                expected=str(snapshot.amount),
-                                extracted=",".join(sorted(unique_amounts)),
-                                matched=False,
-                                status="CONFLICT",
-                                explanation="Multiple documents have conflicting amounts",
+                    else:
+                        unique_amounts = {str(a[1]) for a in amount_candidates}
+                        if len(unique_amounts) > 1:
+                            warnings.append(
+                                f"Conflicting document amounts found: {sorted(unique_amounts)}"
                             )
-                        )
-                        return comparisons, VerificationDecision.MANUAL_REVIEW, warnings
-                    selected_amount = amount_candidates[0][1]
+                            comparisons.append(
+                                FieldComparisonResult(
+                                    field_name="amount",
+                                    expected=str(snapshot.amount),
+                                    extracted=",".join(sorted(unique_amounts)),
+                                    matched=False,
+                                    status="CONFLICT",
+                                    explanation="Multiple documents have conflicting amounts",
+                                )
+                            )
+                            return comparisons, VerificationDecision.MANUAL_REVIEW, warnings
+                        selected_amount = amount_candidates[0][1]
             else:
                 selected_amount = amount_candidates[0][1]
+        elif snapshot.amount is not None:
+            joined = "\n".join(e.raw_text or "" for e in extractions)
+            fuzzy = amount_mentioned_in_ocr(
+                joined,
+                snapshot.amount,
+                tolerance=max(self.settings.amount_tolerance_decimal, Decimal("5.00")),
+            )
+            if fuzzy is not None:
+                selected_amount = fuzzy
+                warnings.append(
+                    f"Amount {fuzzy} recovered from combined OCR text against transaction"
+                )
 
-        selected_date = date_candidates[0][1] if date_candidates else None
+        # Prefer a document date that matches the transaction (Due Date vs Invoice Date)
+        selected_date = None
+        if date_candidates:
+            if snapshot.date is not None:
+                from app.validators.date_validator import normalize_date
+
+                txn_day = normalize_date(snapshot.date)
+                matching_dates = []
+                for file_id, raw_date, conf in date_candidates:
+                    doc_day = normalize_date(raw_date)
+                    if txn_day and doc_day and abs((txn_day - doc_day).days) <= self.settings.date_tolerance_days:
+                        matching_dates.append((file_id, raw_date, conf))
+                if matching_dates:
+                    selected_date = matching_dates[0][1]
+                    if len({d[1] for d in date_candidates}) > 1:
+                        warnings.append(
+                            "Multiple document dates found; selected the one matching "
+                            f"transaction date {txn_day}"
+                        )
+                else:
+                    # Fuzzy search before accepting a wrong/ unrelated date
+                    joined = "\n".join(e.raw_text or "" for e in extractions)
+                    fuzzy_date = date_mentioned_in_ocr(joined, snapshot.date)
+                    selected_date = fuzzy_date or date_candidates[0][1]
+                    if fuzzy_date:
+                        warnings.append(
+                            f"Date {fuzzy_date} recovered from OCR text against transaction"
+                        )
+            else:
+                selected_date = date_candidates[0][1]
+        elif snapshot.date is not None:
+            joined = "\n".join(e.raw_text or "" for e in extractions)
+            fuzzy_date = date_mentioned_in_ocr(joined, snapshot.date)
+            if fuzzy_date:
+                selected_date = fuzzy_date
+                warnings.append(
+                    f"Date {fuzzy_date} recovered from OCR text against transaction"
+                )
         selected_party = party_candidates[0][1] if party_candidates else None
         selected_description = description_candidates[0][1] if description_candidates else None
 
