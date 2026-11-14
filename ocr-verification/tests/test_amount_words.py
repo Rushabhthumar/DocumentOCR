@@ -38,6 +38,24 @@ def test_ocr_date_repairs():
     assert normalize_date("01-4/26").isoformat() == "2026-04-01"
     assert normalize_date("Date. 184126").isoformat() == "2026-04-18"
     assert normalize_date("Date.0.20626").isoformat() == "2026-06-02"
+    assert normalize_date("13 Nov'26").isoformat() == "2026-11-13"
+    assert normalize_date("Generated on: 13 Nov'26 (08:32 PM)").isoformat() == "2026-11-13"
+
+
+def test_upi_generated_on_used_as_document_date():
+    from app.services.extractors.generic_extractor import extract_generic_fields
+
+    text = """
+    UPI payment receipt
+    Transaction amount ₹9,000.00
+    Transaction reference number 179469372212
+    Payment to GANAPURAM RAVI KIRAN
+    Status Success
+    Generated on: 13 Nov'26 (08:32 PM)
+    """
+    parsed = extract_generic_fields(text, confidence=0.9)
+    assert parsed["fields"]["amount"].value == "9000.00"
+    assert normalize_date(parsed["fields"]["documentDate"].value).isoformat() == "2026-11-13"
 
 
 def test_cash_memo_equals_paise_amount():

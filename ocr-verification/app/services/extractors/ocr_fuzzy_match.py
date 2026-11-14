@@ -84,13 +84,16 @@ def _date_variants(day: date) -> list[str]:
                 f"{d}{sep}{m}{sep}{yy}",
             ]
         )
-    # Printed invoices: 6-Apr-26
+    # Printed invoices / UPI: 6-Apr-26, 13 Nov'26
     variants.extend(
         [
             f"{d}-{mon}-{yy}",
             f"{d}-{mon}-{y}",
             f"{d:02d}-{mon}-{yy}",
             f"{d} {mon} {yy}",
+            f"{d} {mon}'{yy}",
+            f"{d} {mon}’{yy}",
+            f"{d:02d} {mon}'{yy}",
         ]
     )
     # OCR glitches: 07 t04/2026, 5.4.26, glued 18426
@@ -133,6 +136,15 @@ def date_mentioned_in_ocr(text: str, expected) -> Optional[str]:
         pat = rf"(?<!\d){re.escape(parts[0])}\s*[tT./\-\s]+\s*{re.escape(parts[1])}\s*[./\-\s]+\s*{re.escape(parts[2])}(?!\d)"
         if re.search(pat, compact, flags=re.IGNORECASE):
             return f"{day.day:02d}/{day.month:02d}/{day.year}"
+    # "Generated on 13 Nov'26" — UPI receipts
+    mon = day.strftime("%b")
+    if re.search(
+        rf"(?i)generated\s*on\s*[:\-]?\s*{day.day}\s*{mon}['’]?\s*"
+        rf"(?:{day.year}|{day.year % 100:02d})\b",
+        compact,
+    ):
+        return f"{day.day:02d}/{day.month:02d}/{day.year}"
+
     # Digit-stream near Date label (Date.184126 → 18/4/26, Date.18412 → 18/4/26)
     day_month_prefixes = {
         f"{day.day}{day.month}",
@@ -140,7 +152,10 @@ def date_mentioned_in_ocr(text: str, expected) -> Optional[str]:
         f"{day.day}{day.month:02d}",
         f"{day.day:02d}{day.month:02d}",
     }
-    for m in re.finditer(r"(?i)\b(?:date|dated)\s*[.:\-]?\s*([0-9][0-9./\-\s]{3,14})", compact):
+    for m in re.finditer(
+        r"(?i)\b(?:date|dated|generated\s*on)\s*[.:\-]?\s*([0-9][0-9./\-\s]{3,14})",
+        compact,
+    ):
         cluster = re.sub(r"\D", "", m.group(1))
         target = f"{day.day:02d}{day.month:02d}{day.year % 100:02d}"
         target_short = f"{day.day}{day.month}{day.year % 100:02d}"

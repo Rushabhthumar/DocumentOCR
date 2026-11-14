@@ -58,15 +58,22 @@ def extract_invoice_fields(text: str, page_number: int = 1, confidence: float = 
             doc_no = None
 
     # Prefer Invoice Date over Due Date. OCR often emits "lnvoice" and "07 t04/2026".
+    # UPI receipts use "Generated on: 13 Nov'26" as the payment date.
     doc_date = normalize_ocr_date(
         _find(
             r"(?i)l?nvoice\s*Date\s*[:\-]?\s*([0-9]{1,2}\s*[tT./\-]\s*[0-9]{1,2}[./\-][0-9]{2,4})",
             compact,
         )
         or _find(
+            r"(?i)generated\s*on\s*[:\-]?\s*"
+            r"([0-9]{1,2}[-/\s]+[A-Za-z]{3,9}['’]?[-/\s]*[0-9]{2,4}"
+            r"|[0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4})",
+            compact,
+        )
+        or _find(
             r"(?i)(?:bill\s*date|dated)\s*[:\-]?\s*"
             r"([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4}"
-            r"|[0-9]{1,2}[-/\s]+[A-Za-z]{3,9}[-/\s]+[0-9]{2,4})",
+            r"|[0-9]{1,2}[-/\s]+[A-Za-z]{3,9}['’]?[-/\s]*[0-9]{2,4})",
             compact,
         )
     )

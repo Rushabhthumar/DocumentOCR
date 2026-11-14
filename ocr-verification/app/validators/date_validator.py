@@ -20,11 +20,11 @@ _DATE_PATTERNS = [
     ("%d/%m-%y", re.compile(r"\b(\d{1,2})/(\d{1,2})[.\-](\d{2})\b")),
     ("%d-%m-%Y", re.compile(r"\b(\d{1,2})-(\d{1,2})[./](\d{4})\b")),
     ("%Y-%m-%d", re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")),
-    # Printed Indian invoices: 6-Apr-26 / 06-Apr-2026
-    ("%d-%b-%y", re.compile(r"\b(\d{1,2})[-/\s]+([A-Za-z]{3,9})[-/\s]+(\d{2})\b")),
-    ("%d-%b-%Y", re.compile(r"\b(\d{1,2})[-/\s]+([A-Za-z]{3,9})[-/\s]+(\d{4})\b")),
-    ("%d-%B-%y", re.compile(r"\b(\d{1,2})[-/\s]+([A-Za-z]{3,9})[-/\s]+(\d{2})\b")),
-    ("%d-%B-%Y", re.compile(r"\b(\d{1,2})[-/\s]+([A-Za-z]{3,9})[-/\s]+(\d{4})\b")),
+    # Printed Indian invoices / UPI receipts: 6-Apr-26 / 13 Nov'26
+    ("%d-%b-%y", re.compile(r"\b(\d{1,2})[-/\s]+([A-Za-z]{3,9})['’]?[-/\s]*(\d{2})\b")),
+    ("%d-%b-%Y", re.compile(r"\b(\d{1,2})[-/\s]+([A-Za-z]{3,9})['’]?[-/\s]*(\d{4})\b")),
+    ("%d-%B-%y", re.compile(r"\b(\d{1,2})[-/\s]+([A-Za-z]{3,9})['’]?[-/\s]*(\d{2})\b")),
+    ("%d-%B-%Y", re.compile(r"\b(\d{1,2})[-/\s]+([A-Za-z]{3,9})['’]?[-/\s]*(\d{4})\b")),
 ]
 
 
@@ -32,7 +32,7 @@ def _parse_with_format(text: str, fmt: str) -> Optional[date]:
     try:
         if any(token in fmt for token in ("%b", "%B")):
             match = re.search(
-                r"(?i)(\d{1,2})[-/\s]+([A-Za-z]{3,9})[-/\s]+(\d{2,4})",
+                r"(?i)(\d{1,2})[-/\s]+([A-Za-z]{3,9})['’]?[-/\s]*(\d{2,4})",
                 text.strip(),
             )
             if not match:
@@ -108,6 +108,25 @@ def repair_ocr_date_text(text: str) -> str:
         cleaned,
     )
     cleaned = re.sub(r"(?i)^dated\s*[:\-]?\s*", "", cleaned).strip()
+    # UPI / bank receipts: "Generated on: 13 Nov'26 (08:32 PM)"
+    cleaned = re.sub(r"(?i)^generated\s*on\s*[:\-]?\s*", "", cleaned).strip()
+    # Drop trailing time in parentheses or after the date
+    cleaned = re.sub(
+        r"(?i)\s*\(\s*\d{1,2}\s*[:.]\s*\d{2}\s*(?:[:.]\s*\d{2})?\s*(?:am|pm)?\s*\)\s*$",
+        "",
+        cleaned,
+    ).strip()
+    cleaned = re.sub(
+        r"(?i)\s+\d{1,2}\s*[:.]\s*\d{2}\s*(?:[:.]\s*\d{2})?\s*(?:am|pm)\s*$",
+        "",
+        cleaned,
+    ).strip()
+    # 13 Nov'26 / 13 Nov’26 → 13 Nov-26
+    cleaned = re.sub(
+        r"(?i)\b(\d{1,2})\s*([A-Za-z]{3,9})['’]\s*(\d{2,4})\b",
+        r"\1-\2-\3",
+        cleaned,
+    )
     # Date.184126 / Date. 0.20626 → unglue digit cluster near Date label
     glued = re.search(
         r"(?i)\b(?:date|dated)\s*[.:\-]?\s*([0-9][0-9./\-\s]{3,12})",

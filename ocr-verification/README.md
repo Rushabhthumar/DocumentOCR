@@ -72,15 +72,25 @@ STRUCTURE_OCR_FOR_ALL_PAGES=false
 
 Copy `.env.example` to `.env` if needed. Current defaults:
 
-- Finance API: `https://finance.api.gurukul.ninja`
-- File API: `https://files.api.gurukul.ninja`
-- `API_AUTH_TOKEN=` empty for local development
+- Finance API: `https://finance.api.gurukul.ninja` (staging)
+- File API: `https://files.api.gurukul.ninja` (staging)
+- Auth: Angular forwards `Authorization` + `AppId`; optional `API_AUTH_TOKEN` for Swagger
 
-When auth is ready, set:
+### Production data testing
+
+1. Put production hosts in `.env`:
 
 ```env
-API_AUTH_TOKEN=Bearer <your-token>
+FINANCE_API_BASE_URL=https://finance.api.<your-prod-host>
+FILE_API_BASE_URL=https://files.api.<your-prod-host>
+UPDATE_ON_VERIFY=false
+BATCH_TEST_TRANSACTION_ID=
 ```
+
+2. Restart API on 8010 (`.\scripts\start_server.ps1`).
+3. From Angular (logged into **production**), call batch/single verify against `http://127.0.0.1:8010` so the real Bearer token is forwarded.
+4. Review decisions with `UPDATE_ON_VERIFY=false` (no narration PUT).
+5. When results look good, set `UPDATE_ON_VERIFY=true` and optionally limit with `BATCH_TEST_TRANSACTION_ID=<one-id>` before a full batch.
 
 ### 6) Start API
 

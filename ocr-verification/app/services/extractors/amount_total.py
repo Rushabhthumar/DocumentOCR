@@ -30,7 +30,7 @@ _GRAND_TOTAL_PATTERNS = [
     rf"(?i)invoice\s*amount{_GAP}(?:rs\.?\s*|inr\s*|₹\s*)?{_AMOUNT}",
     rf"(?i)total\s*amount\s*after\s*tax{_GAP}(?:rs\.?\s*|inr\s*|₹\s*)?{_AMOUNT}",
     rf"(?i)total\s*bill\s*amount{_GAP}(?:rs\.?\s*|inr\s*|₹\s*)?{_AMOUNT}",
-    rf"(?i)(?:net\s*payable|amount\s*payable|amount\s*due|bill\s*amount){_GAP}(?:rs\.?\s*|inr\s*|₹\s*)?{_AMOUNT}",
+    rf"(?i)(?:net\s*payable|amount\s*payable|amount\s*due|bill\s*amount|transaction\s*amount){_GAP}(?:rs\.?\s*|inr\s*|₹\s*)?{_AMOUNT}",
     rf"(?i)(?:total\s*tai\s*amount|total\s*tax\s*amount|total\s*amt){_GAP}(?:rs\.?\s*|inr\s*|₹\s*)?{_AMOUNT}",
     rf"(?i)\bbalance\b{_GAP}(?:rs\.?\s*|inr\s*|₹\s*)?{_AMOUNT}",
     rf"(?i)\btotal\b{_GAP}(?:rs\.?\s*|inr\s*|₹\s*)?{_AMOUNT}",

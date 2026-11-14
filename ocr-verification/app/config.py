@@ -29,6 +29,10 @@ class Settings(BaseSettings):
 
     api_auth_header: str = "Authorization"
     api_auth_token: Optional[str] = None
+    # Static client key used by Angular for Files API (also accept per-request Apikey)
+    file_api_key: Optional[str] = None
+    # Optional fallback AppId when Angular does not forward it
+    file_app_id: Optional[str] = None
 
     amount_tolerance: str = "0.01"
     date_tolerance_days: int = 0
@@ -52,6 +56,9 @@ class Settings(BaseSettings):
     # Status field written only on successful verification
     verified_flag_field: str = "isTransactionVerifyByOCR"
     verified_flag_value: bool = True
+    # When false: compare OCR vs transaction but do NOT PUT narration / verified flag
+    # Use this for the first pass against production data.
+    update_on_verify: bool = True
 
     # Temporary test filter: if set, batch processes only this transaction _id
     batch_test_transaction_id: Optional[str] = None
@@ -84,12 +91,16 @@ class Settings(BaseSettings):
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def auth_headers(self) -> dict[str, str]:
+    def auth_headers(self, *, for_files: bool = False) -> dict[str, str]:
         """
-        Prefer the Authorization / AppId forwarded from the Angular request;
-        fall back to API_AUTH_TOKEN from .env for local/Swagger use.
+        Prefer Authorization / AppId forwarded from Angular;
+        fall back to .env for local/Swagger. Apikey is Files-API only.
         """
-        from app.auth_context import get_request_app_id, get_request_authorization
+        from app.auth_context import (
+            get_request_api_key,
+            get_request_app_id,
+            get_request_authorization,
+        )
 
         headers: dict[str, str] = {
             "Content-Type": "application/json",
@@ -99,11 +110,22 @@ class Settings(BaseSettings):
         request_auth = get_request_authorization()
         token = request_auth or self.api_auth_token
         if token:
+            token = token.strip()
+            if token and not token.lower().startswith("bearer "):
+                token = f"Bearer {token}"
             headers[self.api_auth_header] = token
 
-        app_id = get_request_app_id()
+        app_id = get_request_app_id() or self.file_app_id
         if app_id:
             headers["AppId"] = app_id
+            if for_files:
+                # Angular Files calls use Appid casing
+                headers["Appid"] = app_id
+
+        if for_files:
+            api_key = get_request_api_key() or self.file_api_key
+            if api_key:
+                headers["Apikey"] = api_key
 
         return headers
 

@@ -61,7 +61,13 @@ def extract_cash_memo_fields(text: str, page_number: int = 1, confidence: float 
         return cleaned
 
     doc_date = _sane_ocr_date(
-        _find(r"(?i)DATE\s*[:\-]?\s*([0-9]{1,2}[./\-tT\s(/|]{1,12}[0-9./\-|)]{2,10})", compact)
+        _find(
+            r"(?i)generated\s*on\s*[:\-]?\s*"
+            r"([0-9]{1,2}[-/\s]+[A-Za-z]{3,9}['’]?[-/\s]*[0-9]{2,4}"
+            r"|[0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4})",
+            compact,
+        )
+        or _find(r"(?i)DATE\s*[:\-]?\s*([0-9]{1,2}[./\-tT\s(/|]{1,12}[0-9./\-|)]{2,10})", compact)
         or _find(r"(?i)Date\s*[:\-]?\s*([0-9]{1,2}[./\-][0-9]{1,2}[./\-][0-9]{2,4})", compact)
         or _find(r"(?i)\bDate\s*[.:\-]?\s*([0-9][0-9./\-|]{4,12})", compact)
     )

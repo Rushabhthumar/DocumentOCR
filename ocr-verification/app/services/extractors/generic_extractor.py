@@ -10,19 +10,27 @@ from app.services.extractors.ocr_date import normalize_ocr_date
 from app.validators.amount_validator import normalize_amount
 
 
-_DATE_TOKEN = re.compile(r"\b(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})\b")
+_DATE_TOKEN = re.compile(
+    r"\b(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}"
+    r"|\d{1,2}[-/\s]+[A-Za-z]{3,9}['’]?[-/\s]*\d{2,4})\b"
+)
 _AMOUNT_TOKEN = re.compile(
     r"(?<!\d)((?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?)(?!\d)"
 )
 
 _AMOUNT_CAPTURE = r"((?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?)"
+_MONTH_DATE = (
+    r"(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}"
+    r"|\d{1,2}[-/\s]+[A-Za-z]{3,9}['’]?[-/\s]*\d{2,4})"
+)
 
 # Prefer payable / final totals over line amounts
 _AMOUNT_LABEL_PATTERNS = [
     (
         r"(?i)(?:grand\s*total|net\s*payable|amount\s*payable|total\s*amount\s*after\s*tax|"
         r"total\s*amount\s*due|bill\s*amount|invoice\s*amount|net\s*amount|"
-        r"total\s*due|amount\s*in\s*figures|total\s*value|total\s*bill\s*amount)\s*[:\-]?\s*"
+        r"transaction\s*amount|total\s*due|amount\s*in\s*figures|total\s*value|"
+        r"total\s*bill\s*amount)\s*[:\-]?\s*"
         r"(?:rs\.?\s*|inr\s*|₹\s*)?" + _AMOUNT_CAPTURE
     ),
     (
@@ -33,6 +41,8 @@ _AMOUNT_LABEL_PATTERNS = [
 ]
 
 _DATE_LABEL_PATTERNS = [
+    # UPI / bank PDF receipts — "Generated on" is the payment business date
+    rf"(?i)generated\s*on\s*[:\-]?\s*{_MONTH_DATE}",
     (
         r"(?i)l?nvoice\s*date\s*[:\-]?\s*"
         r"(\d{1,2}\s*[tT./\-]\s*\d{1,2}[./\-]\d{2,4})"
@@ -40,10 +50,10 @@ _DATE_LABEL_PATTERNS = [
     (
         r"(?i)(?:bill\s*date|voucher\s*date|receipt\s*date|"
         r"challan\s*date|document\s*date|txn\s*date|transaction\s*date|"
-        r"payment\s*date|pymt_date|dated)\s*[:\-]?\s*(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})"
+        r"payment\s*date|pymt_date|dated)\s*[:\-]?\s*" + _MONTH_DATE
     ),
     # Bare Date — but skip when the label is Due Date (handled by negative lookbehind)
-    r"(?i)(?<!due\s)\bdate\s*[:\-]?\s*(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})",
+    r"(?i)(?<!due\s)\bdate\s*[:\-]?\s*" + _MONTH_DATE,
 ]
 
 _DOC_NO_PATTERNS = [

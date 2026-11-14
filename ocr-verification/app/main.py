@@ -16,12 +16,21 @@ from app.services.history_service import HistoryService
 
 
 class ForwardAuthMiddleware(BaseHTTPMiddleware):
-    """Capture Angular Authorization / AppId and use them for Finance/File API calls."""
+    """Capture Angular Authorization / AppId / Apikey for Finance/File API calls."""
 
     async def dispatch(self, request: Request, call_next):
         authorization = request.headers.get("authorization") or request.headers.get("Authorization")
-        app_id = request.headers.get("appid") or request.headers.get("AppId")
-        set_request_auth(authorization, app_id)
+        app_id = (
+            request.headers.get("appid")
+            or request.headers.get("AppId")
+            or request.headers.get("Appid")
+        )
+        api_key = (
+            request.headers.get("apikey")
+            or request.headers.get("ApiKey")
+            or request.headers.get("Apikey")
+        )
+        set_request_auth(authorization, app_id, api_key)
         try:
             return await call_next(request)
         finally:

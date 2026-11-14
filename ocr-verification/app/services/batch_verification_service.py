@@ -136,17 +136,15 @@ class BatchVerificationService:
             try:
                 # Reuse single-txn pipeline: authoritative GET + all file OCR + match + conditional PUT
                 result = self.verification_service.verify(txn_id, force=request.force)
-                if (
-                    result.decision == VerificationDecision.VERIFIED
-                    and result.status_updated
-                ):
+                # Dry-run (UPDATE_ON_VERIFY=false) is still a successful match
+                if result.decision == VerificationDecision.VERIFIED:
                     response.completed += 1
                     response.results.append(
                         BatchTransactionOutcome(
                             transaction_id=txn_id,
                             status="COMPLETED",
                             decision=result.decision.value,
-                            status_updated=True,
+                            status_updated=result.status_updated,
                             file_ids=file_ids,
                             message=result.message,
                         )

@@ -196,17 +196,23 @@ class TransactionVerificationService:
             errors: list[str] = []
 
             if decision == VerificationDecision.VERIFIED:
-                try:
-                    self.transaction_service.mark_verified_by_ocr(transaction_id, raw_txn)
-                    status_updated = True
-                    verified_flag_set = True
-                    message = "Verified. Appended OCR to narration."
-                except Exception as exc:  # noqa: BLE001
-                    decision = VerificationDecision.MANUAL_REVIEW
-                    warnings.append(f"Verification matched but status update failed: {exc}")
-                    message = f"Matched fields but failed to update transaction: {exc}"
-                    errors = [message]
-                    status_updated = False
+                if not self.settings.update_on_verify:
+                    warnings.append(
+                        "Dry-run: fields matched but UPDATE_ON_VERIFY=false — no finance PUT"
+                    )
+                    message = "Verified (dry-run). Finance transaction was not updated."
+                else:
+                    try:
+                        self.transaction_service.mark_verified_by_ocr(transaction_id, raw_txn)
+                        status_updated = True
+                        verified_flag_set = True
+                        message = "Verified. Appended OCR to narration."
+                    except Exception as exc:  # noqa: BLE001
+                        decision = VerificationDecision.MANUAL_REVIEW
+                        warnings.append(f"Verification matched but status update failed: {exc}")
+                        message = f"Matched fields but failed to update transaction: {exc}"
+                        errors = [message]
+                        status_updated = False
             else:
                 reasons = self._failure_reasons(comparisons, warnings, decision)
                 message = "; ".join(reasons) if reasons else f"Decision {decision.value}"
