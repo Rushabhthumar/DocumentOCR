@@ -48,7 +48,7 @@ def amounts_equivalent(a: Decimal, b: Decimal, tolerance: Decimal = Decimal("1.0
     return abs(a - b) <= tolerance
 
 
-def _looks_like_phone_or_id(amount: Decimal, text: str = "") -> bool:
+def looks_like_phone_or_id(amount: Decimal, text: str = "") -> bool:
     """Reject Indian mobiles / account fragments mistaken for bill totals."""
     whole = int(amount)
     digits = str(whole)
@@ -96,7 +96,7 @@ def extract_grand_total(text: str) -> tuple[Optional[Decimal], Optional[str]]:
             amount = normalize_amount(raw)
             if amount is None or amount < Decimal("1.00"):
                 continue
-            if _looks_like_phone_or_id(amount, compact):
+            if looks_like_phone_or_id(amount, compact):
                 continue
             window = compact[match.start() : min(len(compact), match.end() + 12)]
             if re.search(r"(?i)\b(?:sqf|sq\.?\s*ft|qty|nos?)\b", window):

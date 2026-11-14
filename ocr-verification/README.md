@@ -173,12 +173,6 @@ Create the App Password at: Google Account → Security → 2-Step Verification 
 pytest -q
 ```
 
-### 11) Demo sample PDFs
-
-```powershell
-python scripts\demo_extract_samples.py
-```
-
 ## Verification rules implemented
 
 - Authoritative values always come from Finance API (not Angular)

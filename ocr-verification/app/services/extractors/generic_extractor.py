@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Optional
 
 from app.models.extraction_models import FieldValue
-from app.services.extractors.amount_total import _looks_like_phone_or_id, extract_grand_total
+from app.services.extractors.amount_total import extract_grand_total, looks_like_phone_or_id
 from app.services.extractors.ocr_date import normalize_ocr_date
 from app.validators.amount_validator import normalize_amount
 
@@ -108,7 +108,7 @@ def _pick_fallback_amount(compact: str) -> Optional[Decimal]:
             continue
         if amount > Decimal("100000000"):
             continue
-        if _looks_like_phone_or_id(amount, compact):
+        if looks_like_phone_or_id(amount, compact):
             continue
         # Qty-like decimals (5104.87 Sqf) — skip when unit words follow
         window = compact[match.start() : min(len(compact), match.end() + 12)]

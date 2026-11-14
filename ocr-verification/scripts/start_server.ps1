@@ -1,6 +1,5 @@
-# Single clean OCR API process (NO --reload).
-# Port 8000 is currently occupied by a stuck old process that cannot be killed
-# without reboot — so we serve on 8010. Point Angular to http://127.0.0.1:8010
+# Single clean OCR API process on 8010 (NO --reload).
+# Point Angular to http://127.0.0.1:8010
 $ErrorActionPreference = "Stop"
 Set-Location "D:\Document OCR\ocr-verification"
 
@@ -12,5 +11,5 @@ Get-CimInstance Win32_Process |
 
 Start-Sleep -Seconds 1
 
-Write-Host "Starting OCR API on http://127.0.0.1:$port (extractorBuild must appear on /health)"
+Write-Host "Starting OCR API on http://127.0.0.1:$port (check extractorBuild on /health)"
 & ".\.venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port $port
