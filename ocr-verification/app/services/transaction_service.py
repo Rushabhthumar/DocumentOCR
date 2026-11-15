@@ -74,16 +74,22 @@ class TransactionService:
     ) -> list[dict[str, Any]]:
         """
         POST /Transactions/GetAll  (same as Angular getAllTransactions)
-        Body: { companyId, periodId, modifiedDate? }
-        Normalizes common list response shapes into a list of transaction dicts.
+
+        Body: { companyId, periodId } only.
+        ``modified_date`` from Angular is ignored and never sent to Finance.
         """
         url = f"{self.settings.finance_api_base_url.rstrip('/')}{self.settings.transaction_list_path}"
+        if modified_date:
+            logger.info(
+                "Ignoring modifiedDate=%s for GetAll (companyId=%s periodId=%s)",
+                modified_date,
+                company_id,
+                period_id,
+            )
         payload: dict[str, Any] = {
             "periodId": period_id,
             "companyId": company_id,
         }
-        if modified_date:
-            payload["modifiedDate"] = modified_date
         owns_client = self._client is None
         client = self._get_client()
         try:

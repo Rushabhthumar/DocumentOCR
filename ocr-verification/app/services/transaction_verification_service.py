@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from app.config import Settings, get_settings
 from app.models.document_models import DocumentType
@@ -59,7 +59,19 @@ class TransactionVerificationService:
                 self._locks[transaction_id] = threading.Lock()
             return self._locks[transaction_id]
 
-    def verify(self, transaction_id: str, *, force: bool = False) -> VerificationResult:
+    def verify(
+        self,
+        transaction_id: str,
+        *,
+        force: bool = False,
+        transaction_payload: Optional[dict[str, Any]] = None,
+    ) -> VerificationResult:
+        """
+        Verify one transaction.
+
+        If ``transaction_payload`` is provided (e.g. a GetAll list item), Finance
+        GetTransaction is skipped and that payload is used for OCR match / PUT.
+        """
         lock = self._lock_for(transaction_id)
         if not lock.acquire(blocking=False):
             return VerificationResult(
@@ -78,26 +90,29 @@ class TransactionVerificationService:
                     latest["message"] = latest.get("message") or "Already verified previously"
                     return VerificationResult.model_validate(latest)
 
-            try:
-                raw_txn = self.transaction_service.get_transaction(transaction_id)
-            except LookupError as exc:
-                result = VerificationResult(
-                    transaction_id=transaction_id,
-                    decision=VerificationDecision.DOCUMENT_NOT_FOUND,
-                    message=str(exc),
-                    errors=[str(exc)],
-                )
-                self.history_service.save(result)
-                return result
-            except Exception as exc:  # noqa: BLE001
-                result = VerificationResult(
-                    transaction_id=transaction_id,
-                    decision=VerificationDecision.MANUAL_REVIEW,
-                    message=f"Failed to fetch transaction from Finance API: {exc}",
-                    errors=[str(exc)],
-                )
-                self.history_service.save(result)
-                return result
+            if transaction_payload is not None:
+                raw_txn = transaction_payload
+            else:
+                try:
+                    raw_txn = self.transaction_service.get_transaction(transaction_id)
+                except LookupError as exc:
+                    result = VerificationResult(
+                        transaction_id=transaction_id,
+                        decision=VerificationDecision.DOCUMENT_NOT_FOUND,
+                        message=str(exc),
+                        errors=[str(exc)],
+                    )
+                    self.history_service.save(result)
+                    return result
+                except Exception as exc:  # noqa: BLE001
+                    result = VerificationResult(
+                        transaction_id=transaction_id,
+                        decision=VerificationDecision.MANUAL_REVIEW,
+                        message=f"Failed to fetch transaction from Finance API: {exc}",
+                        errors=[str(exc)],
+                    )
+                    self.history_service.save(result)
+                    return result
 
             snapshot = self.transaction_service.to_snapshot(raw_txn)
             if not snapshot.file_ids:

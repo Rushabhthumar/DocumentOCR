@@ -65,6 +65,16 @@ def test_batch_skips_no_attachments_and_completes_verified(tmp_path):
     assert result.completed == 1
     assert result.failed == 1
     assert verify_service.verify.call_count == 2
+    # modifiedDate from Angular must not be forwarded to Finance GetAll
+    list_kwargs = txn_service.list_transactions.call_args.kwargs
+    assert list_kwargs["company_id"] == "comp1"
+    assert list_kwargs["period_id"] == 79
+    assert list_kwargs.get("modified_date") in (None, "")
+    # Batch passes GetAll item as transaction_payload (no per-id GetTransaction)
+    first_kwargs = verify_service.verify.call_args_list[0].kwargs
+    assert first_kwargs["transaction_payload"]["_id"] == "t2"
+    assert first_kwargs["transaction_payload"]["attachments"][0]["fileId"] == 11643
+    txn_service.get_transaction.assert_not_called()
     email_service.send_batch_summary.assert_called_once()
 
 

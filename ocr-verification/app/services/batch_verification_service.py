@@ -61,7 +61,8 @@ class BatchVerificationService:
 
         try:
             logger.info(
-                "Starting batch verify companyId=%s periodId=%s modifiedDate=%s",
+                "Starting batch verify companyId=%s periodId=%s "
+                "(modifiedDate from Angular ignored for GetAll)=%s",
                 request.companyId,
                 request.periodId,
                 request.modifiedDate,
@@ -69,7 +70,8 @@ class BatchVerificationService:
             transactions = self.transaction_service.list_transactions(
                 company_id=request.companyId,
                 period_id=request.periodId,
-                modified_date=request.modifiedDate or None,
+                # Angular may send modifiedDate; do not forward it to Finance GetAll
+                modified_date=None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Batch fetch failed")
@@ -134,8 +136,12 @@ class BatchVerificationService:
 
             response.processed += 1
             try:
-                # Reuse single-txn pipeline: authoritative GET + all file OCR + match + conditional PUT
-                result = self.verification_service.verify(txn_id, force=request.force)
+                # Use GetAll item directly — skip per-id Finance GetTransaction
+                result = self.verification_service.verify(
+                    txn_id,
+                    force=request.force,
+                    transaction_payload=item,
+                )
                 # Dry-run (UPDATE_ON_VERIFY=false) is still a successful match
                 if result.decision == VerificationDecision.VERIFIED:
                     response.completed += 1

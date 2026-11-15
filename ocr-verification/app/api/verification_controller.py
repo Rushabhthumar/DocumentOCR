@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/transaction-verification", tags=["Transaction Ve
 @router.post("/batch")
 def verify_transactions_batch(body: BatchVerifyRequest):
     """
-    Fetch transactions by companyId + periodId + modifiedDate, then verify each
+    Fetch transactions by companyId + periodId (modifiedDate ignored for GetAll), then verify each
     transaction that has attachments. Appends OCR to narration only when verified.
     Sends a summary email to the configured recipient.
     """

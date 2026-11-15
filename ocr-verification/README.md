@@ -147,7 +147,7 @@ AppId: <same client id as Finance Angular>
 Angular Transaction grid: toolbar **OCR Document Verification** button calls this endpoint with the logged-in user's bearer token.
 
 Flow:
-1. Calls Finance `POST /Transactions/GetAll` with `{ companyId, periodId, modifiedDate }` (same as Angular `getAllTransactions`)
+1. Calls Finance `POST /Transactions/GetAll` with `{ companyId, periodId }` only (`modifiedDate` from Angular is ignored)
 2. For each transaction with attachments, downloads all `fileId`s via `/File/DownloadOCR/{fileId}`
 3. Extracts + matches amount/date
 4. PUT appends `OCR` to narration only when verified (does not set `isTransactionVerifyByOCR` for now)

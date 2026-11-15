@@ -55,15 +55,8 @@ class FileService:
         return httpx.Client(timeout=120.0)
 
     def download_file(self, file_id: str | int, filename: Optional[str] = None) -> DocumentBinary:
-        # Try both paths — prod often allows /File/Download but not DownloadOCR (and vice versa)
-        candidates: list[str] = []
-        for path in (
-            self.settings.file_download_path.format(file_id=file_id),
-            f"/File/Download/{file_id}",
-            f"/File/DownloadOCR/{file_id}",
-        ):
-            if path not in candidates:
-                candidates.append(path)
+        path = self.settings.file_download_path.format(file_id=file_id)
+        url = f"{self.settings.file_api_base_url.rstrip('/')}{path}"
 
         owns_client = self._client is None
         client = self._get_client()
@@ -81,34 +74,28 @@ class FileService:
                     bool(headers.get("Appid")),
                     bool(headers.get("Apikey")),
                 )
-                for path in candidates:
-                    url = f"{self.settings.file_api_base_url.rstrip('/')}{path}"
-                    response = client.get(url, headers=headers)
-                    logger.info("File GET %s -> %s", url, response.status_code)
-                    if response.status_code in {401, 403}:
-                        body_preview = (response.text or "")[:240].replace("\n", " ")
-                        logger.warning(
-                            "File %s on %s body=%s",
-                            response.status_code,
-                            path,
-                            body_preview,
-                        )
-                        last_error = httpx.HTTPStatusError(
-                            f"{response.status_code} for {url}",
-                            request=response.request,
-                            response=response,
-                        )
-                        continue
-                    if response.status_code == 404:
-                        last_error = FileNotFoundError(f"File not found for file_id={file_id}")
-                        continue
-                    try:
-                        response.raise_for_status()
-                    except Exception as exc:  # noqa: BLE001
-                        last_error = exc
-                        continue
-                    break
-                else:
+                response = client.get(url, headers=headers)
+                logger.info("File GET %s -> %s", url, response.status_code)
+                if response.status_code in {401, 403}:
+                    body_preview = (response.text or "")[:240].replace("\n", " ")
+                    logger.warning(
+                        "File %s on %s body=%s",
+                        response.status_code,
+                        path,
+                        body_preview,
+                    )
+                    last_error = httpx.HTTPStatusError(
+                        f"{response.status_code} for {url}",
+                        request=response.request,
+                        response=response,
+                    )
+                    continue
+                if response.status_code == 404:
+                    raise FileNotFoundError(f"File not found for file_id={file_id}")
+                try:
+                    response.raise_for_status()
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
                     continue
                 break
             else:
