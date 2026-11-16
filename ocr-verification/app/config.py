@@ -52,6 +52,8 @@ class Settings(BaseSettings):
 
     history_db_path: str = "./temp/verification_history.db"
     temp_dir: str = "./temp"
+    # Downloaded docs for failed verifications (review / retrain later)
+    failed_verification_dir: str = "./FailedVarificationDocuments"
 
     # Status field written only on successful verification
     verified_flag_field: str = "isTransactionVerifyByOCR"
@@ -82,6 +84,12 @@ class Settings(BaseSettings):
     @property
     def temp_path(self) -> Path:
         path = Path(self.temp_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def failed_verification_path(self) -> Path:
+        path = Path(self.failed_verification_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
 

@@ -13,3 +13,4 @@ models_cache/
 analysis-tmp/
 out/
 FailedVarificationDocuments/*
+!FailedVarificationDocuments/.gitkeep

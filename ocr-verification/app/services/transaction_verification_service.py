@@ -21,6 +21,7 @@ from app.services.extractors.utr_extractor import payment_row_to_fields, select_
 from app.services.file_service import FileService
 from app.services.history_service import HistoryService
 from app.services.transaction_service import TransactionService
+from app.utils.file_utils import save_failed_verification_documents
 from app.validators import compare_amounts, compare_dates, compare_descriptions, compare_party_names
 from app.validators.amount_validator import normalize_amount
 
@@ -82,13 +83,15 @@ class TransactionVerificationService:
             )
 
         temp_docs = []
+        result: Optional[VerificationResult] = None
         try:
             if not force:
                 latest = self.history_service.latest(transaction_id)
                 if latest and latest.get("decision") == VerificationDecision.VERIFIED.value:
                     # Idempotent: already verified
                     latest["message"] = latest.get("message") or "Already verified previously"
-                    return VerificationResult.model_validate(latest)
+                    result = VerificationResult.model_validate(latest)
+                    return result
 
             if transaction_payload is not None:
                 raw_txn = transaction_payload
@@ -248,6 +251,24 @@ class TransactionVerificationService:
             self.history_service.save(result)
             return result
         finally:
+            if (
+                result is not None
+                and result.decision != VerificationDecision.VERIFIED
+                and temp_docs
+            ):
+                try:
+                    save_failed_verification_documents(
+                        self.settings,
+                        transaction_id=transaction_id,
+                        decision=result.decision.value,
+                        message=result.message or "",
+                        errors=list(result.errors or []),
+                        documents=temp_docs,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Failed to archive documents for txn=%s", transaction_id
+                    )
             for binary in temp_docs:
                 self.file_service.cleanup(binary)
             lock.release()

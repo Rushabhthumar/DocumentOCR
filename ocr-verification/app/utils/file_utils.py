@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import mimetypes
 import re
+import shutil
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
@@ -87,3 +92,73 @@ def cleanup_path(path: Optional[str | Path]) -> None:
         Path(path).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def save_failed_verification_documents(
+    settings: Settings,
+    *,
+    transaction_id: str,
+    decision: str,
+    message: str = "",
+    errors: Optional[list[str]] = None,
+    documents: list[Any],
+) -> Path | None:
+    """
+    Copy downloaded supporting files for a failed verification into
+    FailedVarificationDocuments/{transaction_id}/ for later review/training.
+    """
+    if not documents:
+        return None
+
+    txn_dir = settings.failed_verification_path / sanitize_filename(transaction_id)
+    txn_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[dict[str, str]] = []
+
+    for doc in documents:
+        local_path = getattr(doc, "local_path", None)
+        if not local_path:
+            continue
+        src = Path(str(local_path))
+        if not src.is_file():
+            logger.warning("Failed-doc source missing: %s", src)
+            continue
+        file_id = str(getattr(doc, "file_id", "") or "unknown")
+        original_name = getattr(doc, "filename", None) or src.name
+        safe_name = sanitize_filename(original_name)
+        dest_name = f"{sanitize_filename(file_id)}_{safe_name}"
+        dest = txn_dir / dest_name
+        try:
+            shutil.copy2(src, dest)
+            saved.append(
+                {
+                    "file_id": file_id,
+                    "filename": original_name,
+                    "saved_as": dest_name,
+                }
+            )
+        except OSError as exc:
+            logger.warning("Could not save failed doc %s: %s", src, exc)
+
+    if not saved:
+        return None
+
+    meta = {
+        "transaction_id": transaction_id,
+        "decision": decision,
+        "message": message,
+        "errors": errors or [],
+        "documents": saved,
+    }
+    meta_path = txn_dir / "_failure_meta.json"
+    try:
+        meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write failure meta for %s: %s", transaction_id, exc)
+
+    logger.info(
+        "Saved %s failed verification file(s) for txn=%s under %s",
+        len(saved),
+        transaction_id,
+        txn_dir,
+    )
+    return txn_dir

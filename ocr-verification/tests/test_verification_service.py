@@ -37,7 +37,9 @@ def service(tmp_path):
     settings = Settings(
         history_db_path=str(tmp_path / "history.db"),
         temp_dir=str(tmp_path / "temp"),
+        failed_verification_dir=str(tmp_path / "FailedVarificationDocuments"),
         api_auth_token=None,
+        update_on_verify=True,
     )
     txn = MagicMock()
     files = MagicMock()
@@ -50,7 +52,7 @@ def service(tmp_path):
         file_service=files,
         extraction_service=extraction,
     )
-    return svc, txn, files, extraction
+    return svc, txn, files, extraction, settings, tmp_path
 
 
 def _utr_extraction():
@@ -76,7 +78,7 @@ def _utr_extraction():
 
 
 def test_successful_verification_updates_flag_only(service):
-    svc, txn, files, extraction = service
+    svc, txn, files, extraction, settings, tmp_path = service
     payload = _txn_payload()
     txn.get_transaction.return_value = payload
     files.download_file.return_value = MagicMock(
@@ -91,14 +93,18 @@ def test_successful_verification_updates_flag_only(service):
     assert result.decision == VerificationDecision.VERIFIED
     assert result.status_updated is True
     txn.mark_verified_by_ocr.assert_called_once_with("txn-1", payload)
+    assert not list((tmp_path / "FailedVarificationDocuments").glob("*"))
 
 
 def test_amount_mismatch_does_not_update_status(service):
-    svc, txn, files, extraction = service
+    svc, txn, files, extraction, settings, tmp_path = service
     payload = _txn_payload(amount=100)
     txn.get_transaction.return_value = payload
+    doc_path = tmp_path / "temp" / "payment.pdf"
+    doc_path.parent.mkdir(parents=True, exist_ok=True)
+    doc_path.write_bytes(b"%PDF-1.4 fake")
     files.download_file.return_value = MagicMock(
-        file_id="101", filename="payment.pdf", local_path="x.pdf"
+        file_id="101", filename="payment.pdf", local_path=str(doc_path)
     )
     extraction.extract_file.return_value = _utr_extraction()
     result = svc.verify("txn-1")
@@ -111,9 +117,14 @@ def test_amount_mismatch_does_not_update_status(service):
     assert "Amount mismatch" in result.message
     assert any("Amount mismatch" in e for e in result.errors)
 
+    failed_dir = tmp_path / "FailedVarificationDocuments" / "txn-1"
+    assert failed_dir.is_dir()
+    assert (failed_dir / "101_payment.pdf").is_file()
+    assert (failed_dir / "_failure_meta.json").is_file()
+
 
 def test_missing_file_ids(service):
-    svc, txn, files, extraction = service
+    svc, txn, files, extraction, settings, tmp_path = service
     payload = _txn_payload()
     payload["attachments"] = []
     txn.get_transaction.return_value = payload
@@ -123,7 +134,7 @@ def test_missing_file_ids(service):
 
 
 def test_file_download_failure(service):
-    svc, txn, files, extraction = service
+    svc, txn, files, extraction, settings, tmp_path = service
     txn.get_transaction.return_value = _txn_payload()
     files.download_file.side_effect = FileNotFoundError("missing")
     result = svc.verify("txn-1")
@@ -132,7 +143,7 @@ def test_file_download_failure(service):
 
 
 def test_duplicate_concurrent_request_blocked(service):
-    svc, txn, files, extraction = service
+    svc, txn, files, extraction, settings, tmp_path = service
     lock = svc._lock_for("txn-1")
     assert lock.acquire(blocking=False)
     try:
