@@ -7,6 +7,9 @@ import httpx
 
 from app.config import Settings, get_settings
 from app.models.document_models import DocumentBinary
+from app.services.network_errors import AuthExpiredError, is_transient_network_error
+from app.services.retry_utils import retry_with_backoff
+from app.services.token_renew_service import token_renew_service
 from app.utils.file_utils import cleanup_path, write_temp_file
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,6 @@ class FileService:
         api_key = base.get("Apikey") or ""
 
         variants: list[dict[str, str]] = []
-        # Exact Angular-style names from DevTools
         primary = {
             "Authorization": token,
             "Accept": "*/*",
@@ -41,7 +43,6 @@ class FileService:
         if api_key:
             primary["Apikey"] = api_key
             variants.append(dict(primary))
-            # Retry without Apikey if server rejects scheme with it
             no_key = dict(primary)
             no_key.pop("Apikey", None)
             variants.append(no_key)
@@ -54,7 +55,7 @@ class FileService:
             return self._client
         return httpx.Client(timeout=120.0)
 
-    def download_file(self, file_id: str | int, filename: Optional[str] = None) -> DocumentBinary:
+    def _download_once(self, file_id: str | int, filename: Optional[str]) -> DocumentBinary:
         path = self.settings.file_download_path.format(file_id=file_id)
         url = f"{self.settings.file_api_base_url.rstrip('/')}{path}"
 
@@ -74,7 +75,13 @@ class FileService:
                     bool(headers.get("Appid")),
                     bool(headers.get("Apikey")),
                 )
-                response = client.get(url, headers=headers)
+                try:
+                    response = client.get(url, headers=headers)
+                except Exception as exc:  # noqa: BLE001
+                    if is_transient_network_error(exc):
+                        raise
+                    last_error = exc
+                    continue
                 logger.info("File GET %s -> %s", url, response.status_code)
                 if response.status_code in {401, 403}:
                     body_preview = (response.text or "")[:240].replace("\n", " ")
@@ -84,12 +91,9 @@ class FileService:
                         path,
                         body_preview,
                     )
-                    last_error = httpx.HTTPStatusError(
-                        f"{response.status_code} for {url}",
-                        request=response.request,
-                        response=response,
+                    raise AuthExpiredError(
+                        f"{response.status_code} Unauthorized downloading file_id={file_id}"
                     )
-                    continue
                 if response.status_code == 404:
                     raise FileNotFoundError(f"File not found for file_id={file_id}")
                 try:
@@ -128,6 +132,16 @@ class FileService:
         finally:
             if owns_client:
                 client.close()
+
+    def download_file(self, file_id: str | int, filename: Optional[str] = None) -> DocumentBinary:
+        return retry_with_backoff(
+            lambda: self._download_once(file_id, filename),
+            settings=self.settings,
+            label=f"download file_id={file_id}",
+            on_auth_expired=lambda: token_renew_service.pause_renew_resume(
+                reason=f"file_download_401:{file_id}"
+            ),
+        )
 
     def cleanup(self, document: Optional[DocumentBinary]) -> None:
         if document:

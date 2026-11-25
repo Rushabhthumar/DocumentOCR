@@ -72,3 +72,91 @@ def test_statement_total_matches_sum_of_rows():
     assert row.amount == total
     assert row.payment_mode == "STATEMENT"
     assert any("statement total" in w.lower() for w in warnings)
+    assert any("all payment dates match" in w.lower() for w in warnings)
+
+
+def test_statement_total_requires_all_payment_dates_match_txn():
+    from app.models.extraction_models import PaymentRow
+    from app.services.extractors.utr_extractor import try_match_statement_total
+
+    rows = [
+        PaymentRow(
+            payment_mode="NEFT",
+            beneficiary_name="A",
+            amount=Decimal("100.00"),
+            payment_date="03-04-2026",
+            utr_no="IN11111111111111",
+            confidence=0.9,
+            page_number=1,
+        ),
+        PaymentRow(
+            payment_mode="NEFT",
+            beneficiary_name="B",
+            amount=Decimal("200.00"),
+            payment_date="04-04-2026",  # different date
+            utr_no="IN22222222222222",
+            confidence=0.9,
+            page_number=1,
+        ),
+    ]
+    row, warnings = try_match_statement_total(
+        rows,
+        amount=Decimal("300.00"),
+        txn_date="2026-04-03",
+    )
+    assert row is None
+    assert any("not all payment dates" in w.lower() for w in warnings)
+
+
+def test_statement_total_matches_when_all_dates_equal_txn():
+    from app.models.extraction_models import PaymentRow
+    from app.services.extractors.utr_extractor import try_match_statement_total
+
+    rows = [
+        PaymentRow(
+            payment_mode="NEFT",
+            beneficiary_name="CHINTALA ANJAIAH SAGAR",
+            amount=Decimal("36000.00"),
+            payment_date="03-04-2026",
+            utr_no="IN42609357238928",
+            confidence=0.9,
+            page_number=1,
+        ),
+        PaymentRow(
+            payment_mode="NEFT",
+            beneficiary_name="LADRASINGH",
+            amount=Decimal("8500.00"),
+            payment_date="03-04-2026",
+            utr_no="IN42609357238950",
+            confidence=0.9,
+            page_number=1,
+        ),
+        PaymentRow(
+            payment_mode="NEFT",
+            beneficiary_name="PRADHAN SINGH",
+            amount=Decimal("8500.00"),
+            payment_date="03-04-2026",
+            utr_no="IN42609357238963",
+            confidence=0.9,
+            page_number=1,
+        ),
+    ]
+    total = Decimal("53000.00")
+    row, warnings = try_match_statement_total(
+        rows,
+        amount=total,
+        txn_date="2026-04-03",
+    )
+    assert row is not None
+    assert row.payment_mode == "STATEMENT"
+    assert row.amount == total
+    assert any("all payment dates match" in w.lower() for w in warnings)
+
+    # Single-line amount that appears twice stays ambiguous (total does not match)
+    amb_row, amb_warnings = select_matching_payment_row(
+        rows,
+        amount=Decimal("8500.00"),
+        txn_date="2026-04-03",
+    )
+    assert amb_row is None
+    assert any("multiple payment rows matched amount and date" in w.lower() for w in amb_warnings)

@@ -90,26 +90,40 @@ class TransactionService:
             "periodId": period_id,
             "companyId": company_id,
         }
-        owns_client = self._client is None
-        client = self._get_client()
-        try:
-            logger.info("Batch list POST %s payload=%s", url, payload)
-            response = client.post(url, json=payload)
-            logger.info("Batch list response status=%s", response.status_code)
-            if response.status_code == 401:
-                raise PermissionError(
-                    "Finance GetAll returned 401 Unauthorized. "
-                    "Pass Authorization (and AppId if required) header when calling /batch, "
-                    "or set API_AUTH_TOKEN in .env for local Swagger debugging."
-                )
-            response.raise_for_status()
-            data = response.json()
-            items = self._normalize_transaction_list(data)
-            logger.info("Batch list normalized count=%s", len(items))
-            return items
-        finally:
-            if owns_client:
-                client.close()
+        from app.services.network_errors import AuthExpiredError
+        from app.services.retry_utils import retry_with_backoff
+        from app.services.token_renew_service import token_renew_service
+
+        def _once() -> list[dict[str, Any]]:
+            owns_client = self._client is None
+            client = self._get_client()
+            try:
+                logger.info("Batch list POST %s payload=%s", url, payload)
+                response = client.post(url, json=payload)
+                logger.info("Batch list response status=%s", response.status_code)
+                if response.status_code in {401, 403}:
+                    raise AuthExpiredError(
+                        "Finance GetAll returned 401 Unauthorized. "
+                        "Pass Authorization (and AppId if required) header when calling /batch, "
+                        "or set API_AUTH_TOKEN in .env for local Swagger debugging."
+                    )
+                response.raise_for_status()
+                data = response.json()
+                items = self._normalize_transaction_list(data)
+                logger.info("Batch list normalized count=%s", len(items))
+                return items
+            finally:
+                if owns_client:
+                    client.close()
+
+        return retry_with_backoff(
+            _once,
+            settings=self.settings,
+            label="Finance GetAll",
+            on_auth_expired=lambda: token_renew_service.pause_renew_resume(
+                reason="finance_getall_401"
+            ),
+        )
 
     @staticmethod
     def _normalize_transaction_list(data: Any) -> list[dict[str, Any]]:

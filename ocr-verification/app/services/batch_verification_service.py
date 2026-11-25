@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
+from app.auth_context import (
+    get_request_api_key,
+    get_request_app_id,
+    get_request_authorization,
+)
 from app.config import Settings, get_settings
 from app.models.verification_models import (
     BatchTransactionOutcome,
@@ -10,7 +15,11 @@ from app.models.verification_models import (
     BatchVerifyResponse,
     VerificationDecision,
 )
+from app.services.auth_token_store import auth_token_store
+from app.services.batch_job_tracker import batch_job_tracker
 from app.services.email_service import EmailService
+from app.services.network_errors import AuthExpiredError, TransientNetworkError
+from app.services.rabbitmq.publisher import BatchJobPublisher
 from app.services.transaction_service import TransactionService
 from app.services.transaction_verification_service import TransactionVerificationService
 
@@ -51,39 +60,53 @@ class BatchVerificationService:
             file_ids.append(str(file_id))
         return file_ids
 
+    def _sync_request_auth_to_store(self) -> None:
+        """Keep worker-visible token store aligned with the calling /batch request."""
+        auth_token_store.update(
+            authorization=get_request_authorization(),
+            app_id=get_request_app_id(),
+            api_key=get_request_api_key(),
+        )
+
     def run(self, request: BatchVerifyRequest) -> BatchVerifyResponse:
+        self._sync_request_auth_to_store()
+        if self.settings.batch_use_rabbitmq:
+            return self._run_rabbitmq(request)
+        return self._run_sync(request)
+
+    def _fetch_transactions(self, request: BatchVerifyRequest) -> tuple[list[dict[str, Any]], BatchVerifyResponse]:
         response = BatchVerifyResponse(
             companyId=request.companyId,
             periodId=request.periodId,
             modifiedDate=request.modifiedDate,
             email_to=self.settings.mail_to,
+            mode="rabbitmq" if self.settings.batch_use_rabbitmq else "sync",
         )
-
         try:
             logger.info(
                 "Starting batch verify companyId=%s periodId=%s "
-                "(modifiedDate from Angular ignored for GetAll)=%s",
+                "(modifiedDate from Angular ignored for GetAll)=%s mode=%s",
                 request.companyId,
                 request.periodId,
                 request.modifiedDate,
+                response.mode,
             )
             transactions = self.transaction_service.list_transactions(
                 company_id=request.companyId,
                 period_id=request.periodId,
-                # Angular may send modifiedDate; do not forward it to Finance GetAll
                 modified_date=None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Batch fetch failed")
             response.message = f"Failed to fetch transactions: {exc}"
             response.email_sent, response.email_error = self._send_summary(response)
-            return response
+            return [], response
 
         response.total_fetched = len(transactions)
         if not transactions:
             response.message = "No transactions returned for the given filters"
             response.email_sent, response.email_error = self._send_summary(response)
-            return response
+            return [], response
 
         test_txn_id = (self.settings.batch_test_transaction_id or "").strip()
         if test_txn_id:
@@ -105,7 +128,89 @@ class BatchVerificationService:
                     f"(fetched={before})"
                 )
                 response.email_sent, response.email_error = self._send_summary(response)
-                return response
+                return [], response
+
+        return transactions, response
+
+    def _run_rabbitmq(self, request: BatchVerifyRequest) -> BatchVerifyResponse:
+        transactions, response = self._fetch_transactions(request)
+        if not transactions and response.message:
+            return response
+
+        messages: list[dict[str, Any]] = []
+        skipped = 0
+        for item in transactions:
+            txn_id = self._transaction_id(item)
+            file_ids = self._attachment_file_ids(item)
+            if not txn_id:
+                skipped += 1
+                response.results.append(
+                    BatchTransactionOutcome(
+                        transaction_id="",
+                        status="SKIPPED",
+                        message="Transaction missing _id",
+                    )
+                )
+                continue
+            if not file_ids:
+                skipped += 1
+                response.results.append(
+                    BatchTransactionOutcome(
+                        transaction_id=txn_id,
+                        status="SKIPPED",
+                        message="No attachments/fileIds on transaction",
+                        file_ids=[],
+                    )
+                )
+                continue
+            messages.append(
+                {
+                    "transaction_id": txn_id,
+                    "force": request.force,
+                    "company_id": request.companyId,
+                    "period_id": request.periodId,
+                    "transaction": item,
+                    "file_ids": file_ids,
+                }
+            )
+
+        job_id = batch_job_tracker.create_job(
+            company_id=request.companyId,
+            period_id=request.periodId,
+            total_queued=len(messages),
+            skipped=skipped,
+            message="Queued for RabbitMQ workers",
+        )
+        for message in messages:
+            message["job_id"] = job_id
+
+        try:
+            published = BatchJobPublisher(self.settings).publish_jobs(messages)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("RabbitMQ publish failed")
+            response.message = f"Failed to publish batch jobs to RabbitMQ: {exc}"
+            response.skipped = skipped
+            response.batch_job_id = job_id
+            response.mode = "rabbitmq"
+            return response
+
+        response.batch_job_id = job_id
+        response.mode = "rabbitmq"
+        response.queued = published
+        response.processed = published
+        response.skipped = skipped
+        response.message = (
+            f"Batch queued on RabbitMQ. job_id={job_id}, fetched={response.total_fetched}, "
+            f"queued={published}, skipped={skipped}. "
+            f"Poll GET /api/transaction-verification/batch/jobs/{job_id}"
+        )
+        # Email after enqueue would be incomplete — skip until job completes (optional later)
+        return response
+
+    def _run_sync(self, request: BatchVerifyRequest) -> BatchVerifyResponse:
+        transactions, response = self._fetch_transactions(request)
+        if not transactions and response.message:
+            return response
 
         for item in transactions:
             txn_id = self._transaction_id(item)
@@ -136,13 +241,11 @@ class BatchVerificationService:
 
             response.processed += 1
             try:
-                # Use GetAll item directly — skip per-id Finance GetTransaction
                 result = self.verification_service.verify(
                     txn_id,
                     force=request.force,
                     transaction_payload=item,
                 )
-                # Dry-run (UPDATE_ON_VERIFY=false) is still a successful match
                 if result.decision == VerificationDecision.VERIFIED:
                     response.completed += 1
                     response.results.append(
@@ -171,6 +274,20 @@ class BatchVerificationService:
                             errors=failure_errors,
                         )
                     )
+            except (TransientNetworkError, AuthExpiredError) as exc:
+                logger.warning("Sync batch transient/auth for %s: %s", txn_id, exc)
+                response.failed += 1
+                response.results.append(
+                    BatchTransactionOutcome(
+                        transaction_id=txn_id,
+                        status="FAILED",
+                        decision=VerificationDecision.MANUAL_REVIEW.value,
+                        status_updated=False,
+                        file_ids=file_ids,
+                        message="Transient network/auth error — retry later (not EXTRACTION_FAILED)",
+                        errors=[str(exc)],
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Batch verification failed for %s", txn_id)
                 response.failed += 1
@@ -207,9 +324,12 @@ class BatchVerificationService:
             f"Company ID: {response.companyId}",
             f"Period ID: {response.periodId}",
             f"Modified Date: {response.modifiedDate or '(all)'}",
+            f"Mode: {response.mode}",
+            f"Batch job ID: {response.batch_job_id or '-'}",
             "",
             f"Total fetched: {response.total_fetched}",
             f"Processed (with attachments): {response.processed}",
+            f"Queued: {response.queued}",
             f"Completed (VERIFIED + updated): {response.completed}",
             f"Failed / not updated: {response.failed}",
             f"Skipped (no attachments / invalid): {response.skipped}",

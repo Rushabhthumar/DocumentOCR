@@ -112,3 +112,23 @@ class BatchVerifyResponse(BaseModel):
     email_error: Optional[str] = None
     results: list[BatchTransactionOutcome] = Field(default_factory=list)
     message: str = ""
+    # Present when BATCH_USE_RABBITMQ=true (async enqueue)
+    mode: str = "sync"  # sync | rabbitmq
+    batch_job_id: Optional[str] = None
+    queued: int = 0
+
+
+class BatchJobStatusResponse(BaseModel):
+    job_id: str
+    company_id: Optional[str] = None
+    period_id: Optional[int] = None
+    status: str
+    total_queued: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    pending: int = 0
+    message: str = ""
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    items: list[dict[str, Any]] = Field(default_factory=list)

@@ -6,6 +6,7 @@ from app.services.extractors.utr_extractor import (
     extract_payment_rows,
     payment_row_to_fields,
     select_matching_payment_row,
+    try_match_statement_total,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "extract_payment_rows",
     "payment_row_to_fields",
     "select_matching_payment_row",
+    "try_match_statement_total",
 ]

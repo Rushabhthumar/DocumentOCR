@@ -20,6 +20,7 @@ from app.services.extractors.ocr_fuzzy_match import amount_mentioned_in_ocr, dat
 from app.services.extractors.utr_extractor import payment_row_to_fields, select_matching_payment_row
 from app.services.file_service import FileService
 from app.services.history_service import HistoryService
+from app.services.network_errors import AuthExpiredError, TransientNetworkError
 from app.services.transaction_service import TransactionService
 from app.utils.file_utils import save_failed_verification_documents
 from app.validators import compare_amounts, compare_dates, compare_descriptions, compare_party_names
@@ -154,6 +155,9 @@ class TransactionVerificationService:
                         )
                     )
                     continue
+                except (TransientNetworkError, AuthExpiredError):
+                    # Let batch/RabbitMQ worker retry or requeue — do not persist EXTRACTION_FAILED
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Failed processing file %s", file_id)
                     doc_results.append(

@@ -65,6 +65,32 @@ class Settings(BaseSettings):
     # Temporary test filter: if set, batch processes only this transaction _id
     batch_test_transaction_id: Optional[str] = None
 
+    # --- RabbitMQ batch (off by default — sync path unchanged) ---
+    batch_use_rabbitmq: bool = False
+    rabbitmq_host: str = "10.10.0.88"
+    rabbitmq_port: int = 5672
+    rabbitmq_username: str = "gurukulUser"
+    rabbitmq_password: str = "gurukulUser"
+    rabbitmq_virtual_host: str = "vrHost"
+    # Same shape as .NET Queue:InsertTxQueue / FailedInsertTxQueue / DeadExchange
+    rabbitmq_queue_verify: str = "ocr.VerifyTxQueue"
+    rabbitmq_queue_failed: str = "ocr.FailedVerifyTxQueue"
+    rabbitmq_dead_exchange: str = "ocr.VerifyTxDeadExchange"
+    rabbitmq_worker_count: int = 4
+    rabbitmq_prefetch: int = 1
+
+    # Connect / DNS retry before treating download as failed
+    network_retry_max_attempts: int = 5
+    network_retry_base_delay_seconds: float = 2.0
+    network_retry_max_delay_seconds: float = 60.0
+
+    # Token renew (URL filled when you share the endpoint)
+    token_renew_api_url: Optional[str] = None
+    token_renew_api_method: str = "POST"
+    token_renew_interval_seconds: int = 3000  # 50 minutes
+    # JSON path to token in renew response, e.g. "accessToken" or "data.token"
+    token_renew_response_token_path: str = "accessToken"
+
     # Batch summary email via free Gmail SMTP only (no paid email APIs)
     mail_to: str = "rutvik.d@gurukul.org"
     mail_from: Optional[str] = None  # defaults to SMTP_USERNAME (Gmail address)
@@ -101,14 +127,15 @@ class Settings(BaseSettings):
 
     def auth_headers(self, *, for_files: bool = False) -> dict[str, str]:
         """
-        Prefer Authorization / AppId forwarded from Angular;
-        fall back to .env for local/Swagger. Apikey is Files-API only.
+        Prefer request ContextVar (HTTP), then process AuthTokenStore (workers),
+        then .env. Apikey is Files-API only.
         """
         from app.auth_context import (
             get_request_api_key,
             get_request_app_id,
             get_request_authorization,
         )
+        from app.services.auth_token_store import auth_token_store
 
         headers: dict[str, str] = {
             "Content-Type": "application/json",
@@ -116,14 +143,14 @@ class Settings(BaseSettings):
         }
 
         request_auth = get_request_authorization()
-        token = request_auth or self.api_auth_token
+        token = request_auth or auth_token_store.get_authorization() or self.api_auth_token
         if token:
             token = token.strip()
             if token and not token.lower().startswith("bearer "):
                 token = f"Bearer {token}"
             headers[self.api_auth_header] = token
 
-        app_id = get_request_app_id() or self.file_app_id
+        app_id = get_request_app_id() or auth_token_store.get_app_id() or self.file_app_id
         if app_id:
             headers["AppId"] = app_id
             if for_files:
@@ -131,7 +158,11 @@ class Settings(BaseSettings):
                 headers["Appid"] = app_id
 
         if for_files:
-            api_key = get_request_api_key() or self.file_api_key
+            api_key = (
+                get_request_api_key()
+                or auth_token_store.get_api_key()
+                or self.file_api_key
+            )
             if api_key:
                 headers["Apikey"] = api_key
 

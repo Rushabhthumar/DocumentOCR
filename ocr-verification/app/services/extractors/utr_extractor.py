@@ -157,6 +157,88 @@ def extract_payment_rows(text: str, page_number: int = 1) -> list[PaymentRow]:
     return rows
 
 
+def _payment_date_matches_txn(payment_date: Optional[str], txn_date: Optional[str]) -> bool:
+    if not payment_date or not txn_date:
+        return False
+    nd = normalize_date(txn_date)
+    rd = normalize_date(payment_date)
+    return bool(nd and rd and nd == rd)
+
+
+def _all_rows_match_txn_date(rows: list[PaymentRow], txn_date: Optional[str]) -> bool:
+    """True only when every payment row has a date and all equal the transaction date."""
+    if not rows or not txn_date:
+        return False
+    return all(_payment_date_matches_txn(r.payment_date, txn_date) for r in rows)
+
+
+def _statement_total_amount(rows: list[PaymentRow]) -> Decimal:
+    return sum((r.amount for r in rows if r.amount is not None), Decimal("0.00"))
+
+
+def _build_statement_total_row(rows: list[PaymentRow], total: Decimal) -> PaymentRow:
+    # Prefer a single normalized display date when all rows share one raw date string.
+    dates = sorted({r.payment_date for r in rows if r.payment_date})
+    payment_date = dates[0] if len(dates) == 1 else (rows[0].payment_date if rows else None)
+    return PaymentRow(
+        payment_mode="STATEMENT",
+        beneficiary_name="MULTIPLE BENEFICIARIES",
+        amount=total,
+        payment_date=payment_date,
+        remark=f"STATEMENT TOTAL ({len(rows)} payments)",
+        status="Success",
+        utr_no=None,
+        confidence=0.9,
+        page_number=rows[0].page_number if rows else 1,
+        source_lines=[f"SUM of {len(rows)} payment rows = {total}"],
+    )
+
+
+def try_match_statement_total(
+    rows: list[PaymentRow],
+    *,
+    amount: Optional[Decimal],
+    txn_date: Optional[str],
+) -> tuple[Optional[PaymentRow], list[str]]:
+    """
+    For multi-row UTR bills: sum all row amounts and match the transaction amount,
+    but only when every row payment date matches the transaction date.
+    """
+    warnings: list[str] = []
+    if len(rows) < 2 or amount is None:
+        return None, warnings
+
+    total = _statement_total_amount(rows)
+    if abs(total - amount) > Decimal("0.01"):
+        return None, warnings
+
+    if not txn_date:
+        warnings.append(
+            "Statement total equals transaction amount, but transaction date is missing"
+        )
+        return None, warnings
+
+    if not _all_rows_match_txn_date(rows, txn_date):
+        mismatched = sorted(
+            {
+                r.payment_date or "missing"
+                for r in rows
+                if not _payment_date_matches_txn(r.payment_date, txn_date)
+            }
+        )
+        warnings.append(
+            "Statement total equals transaction amount, but not all payment dates "
+            f"match transaction date ({txn_date}): {mismatched}"
+        )
+        return None, warnings
+
+    warnings.append(
+        f"Matched transaction amount to UTR statement total across {len(rows)} rows "
+        "(all payment dates match transaction date)"
+    )
+    return _build_statement_total_row(rows, total), warnings
+
+
 def select_matching_payment_row(
     rows: list[PaymentRow],
     *,
@@ -186,52 +268,41 @@ def select_matching_payment_row(
             amount_hits.append(row)
 
     if not amount_hits:
-        # Fallback: match transaction amount to the statement total (sum of all rows)
-        total = sum((r.amount for r in rows if r.amount is not None), Decimal("0.00"))
-        if amount is not None and abs(total - amount) <= Decimal("0.01"):
-            dates = sorted({r.payment_date for r in rows if r.payment_date})
-            payment_date = dates[0] if len(dates) == 1 else None
-            if len(dates) > 1:
-                warnings.append(
-                    f"Statement total matched amount, but payment dates differ: {dates}"
-                )
-            warnings.append(
-                f"Matched transaction amount to UTR statement total across {len(rows)} rows"
-            )
-            return (
-                PaymentRow(
-                    payment_mode="STATEMENT",
-                    beneficiary_name="MULTIPLE BENEFICIARIES",
-                    amount=total,
-                    payment_date=payment_date,
-                    remark=f"STATEMENT TOTAL ({len(rows)} payments)",
-                    status="Success",
-                    utr_no=None,
-                    confidence=0.9,
-                    page_number=rows[0].page_number,
-                    source_lines=[f"SUM of {len(rows)} payment rows = {total}"],
-                ),
-                warnings,
-            )
+        total_row, total_warnings = try_match_statement_total(
+            rows, amount=amount, txn_date=txn_date
+        )
+        warnings.extend(total_warnings)
+        if total_row is not None:
+            return total_row, warnings
         return None, warnings + ["No payment row matched transaction amount"]
 
     date_hits = []
     for row in amount_hits:
-        if not txn_date or not row.payment_date:
-            continue
-        nd = normalize_date(txn_date)
-        rd = normalize_date(row.payment_date)
-        if nd and rd and nd == rd:
+        if _payment_date_matches_txn(row.payment_date, txn_date):
             date_hits.append(row)
 
     if len(date_hits) == 1:
         return date_hits[0], warnings
     if len(date_hits) > 1:
+        # Ambiguous single-row amount; still allow full-statement total match.
+        total_row, total_warnings = try_match_statement_total(
+            rows, amount=amount, txn_date=txn_date
+        )
+        warnings.extend(total_warnings)
+        if total_row is not None:
+            return total_row, warnings
         warnings.append("Multiple payment rows matched amount and date")
         return None, warnings
     if len(amount_hits) == 1:
         warnings.append("Amount matched but payment date did not; manual review required")
         return amount_hits[0], warnings
+
+    total_row, total_warnings = try_match_statement_total(
+        rows, amount=amount, txn_date=txn_date
+    )
+    warnings.extend(total_warnings)
+    if total_row is not None:
+        return total_row, warnings
     warnings.append("Multiple payment rows matched amount without unique date match")
     return None, warnings
 
