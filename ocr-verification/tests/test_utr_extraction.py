@@ -1,6 +1,7 @@
 from decimal import Decimal
 from pathlib import Path
 
+from app.models.extraction_models import PaymentRow
 from app.services.extractors.utr_extractor import (
     extract_payment_rows,
     select_matching_payment_row,
@@ -35,13 +36,15 @@ def test_utr_rows_preserve_wrapped_remarks():
     assert "SALARY" in (wrapped.remark or "").upper()
 
 
-def test_select_row_by_amount_and_date():
+def test_select_row_by_date_amount_and_remark():
     text = PdfService().process_pdf(PAYMENT_PDF)[0].text
     rows = extract_payment_rows(text)
+    target = next(r for r in rows if r.utr_no == "IN42631151879720")
     row, warnings = select_matching_payment_row(
         rows,
         amount=Decimal("85850"),
         txn_date="2026-11-07T00:00:00Z",
+        narration=target.remark,
     )
     assert row is not None
     assert row.utr_no == "IN42631151879720"
@@ -54,12 +57,14 @@ def test_incorrect_amount_does_not_match_row():
         rows,
         amount=Decimal("1.00"),
         txn_date="2026-11-07T00:00:00Z",
+        narration="ANY NARRATION",
     )
     assert row is None
     assert any("amount" in w.lower() for w in warnings)
 
 
-def test_statement_total_matches_sum_of_rows():
+def test_statement_sum_is_not_used_for_matching():
+    """Multi-row UTR docs must not verify by summing all row amounts."""
     text = PdfService().process_pdf(PAYMENT_PDF)[0].text
     rows = extract_payment_rows(text)
     total = sum((r.amount or Decimal("0") for r in rows), Decimal("0"))
@@ -67,66 +72,20 @@ def test_statement_total_matches_sum_of_rows():
         rows,
         amount=total,
         txn_date="2026-11-07T00:00:00Z",
-    )
-    assert row is not None
-    assert row.amount == total
-    assert row.payment_mode == "STATEMENT"
-    assert any("statement total" in w.lower() for w in warnings)
-    assert any("all payment dates match" in w.lower() for w in warnings)
-
-
-def test_statement_total_requires_all_payment_dates_match_txn():
-    from app.models.extraction_models import PaymentRow
-    from app.services.extractors.utr_extractor import try_match_statement_total
-
-    rows = [
-        PaymentRow(
-            payment_mode="NEFT",
-            beneficiary_name="A",
-            amount=Decimal("100.00"),
-            payment_date="03-04-2026",
-            utr_no="IN11111111111111",
-            confidence=0.9,
-            page_number=1,
-        ),
-        PaymentRow(
-            payment_mode="NEFT",
-            beneficiary_name="B",
-            amount=Decimal("200.00"),
-            payment_date="04-04-2026",  # different date
-            utr_no="IN22222222222222",
-            confidence=0.9,
-            page_number=1,
-        ),
-    ]
-    row, warnings = try_match_statement_total(
-        rows,
-        amount=Decimal("300.00"),
-        txn_date="2026-04-03",
+        narration="STATEMENT TOTAL SHOULD NOT MATCH",
     )
     assert row is None
-    assert any("not all payment dates" in w.lower() for w in warnings)
+    assert not any("statement total" in w.lower() for w in warnings)
 
 
-def test_statement_total_matches_when_all_dates_equal_txn():
-    from app.models.extraction_models import PaymentRow
-    from app.services.extractors.utr_extractor import try_match_statement_total
-
+def test_remark_disambiguates_same_date_and_amount():
     rows = [
-        PaymentRow(
-            payment_mode="NEFT",
-            beneficiary_name="CHINTALA ANJAIAH SAGAR",
-            amount=Decimal("36000.00"),
-            payment_date="03-04-2026",
-            utr_no="IN42609357238928",
-            confidence=0.9,
-            page_number=1,
-        ),
         PaymentRow(
             payment_mode="NEFT",
             beneficiary_name="LADRASINGH",
             amount=Decimal("8500.00"),
             payment_date="03-04-2026",
+            remark="PAID TO LADRASINGH FOR SALARY",
             utr_no="IN42609357238950",
             confidence=0.9,
             page_number=1,
@@ -136,27 +95,63 @@ def test_statement_total_matches_when_all_dates_equal_txn():
             beneficiary_name="PRADHAN SINGH",
             amount=Decimal("8500.00"),
             payment_date="03-04-2026",
+            remark="PAID TO PRADHAN SINGH FOR SALARY",
             utr_no="IN42609357238963",
             confidence=0.9,
             page_number=1,
         ),
     ]
-    total = Decimal("53000.00")
-    row, warnings = try_match_statement_total(
-        rows,
-        amount=total,
-        txn_date="2026-04-03",
-    )
-    assert row is not None
-    assert row.payment_mode == "STATEMENT"
-    assert row.amount == total
-    assert any("all payment dates match" in w.lower() for w in warnings)
-
-    # Single-line amount that appears twice stays ambiguous (total does not match)
-    amb_row, amb_warnings = select_matching_payment_row(
+    row, warnings = select_matching_payment_row(
         rows,
         amount=Decimal("8500.00"),
         txn_date="2026-04-03",
+        narration="PAID TO PRADHAN SINGH FOR SALARY",
     )
-    assert amb_row is None
-    assert any("multiple payment rows matched amount and date" in w.lower() for w in amb_warnings)
+    assert row is not None
+    assert row.utr_no == "IN42609357238963"
+
+
+def test_date_amount_match_but_remark_mismatch_fails():
+    rows = [
+        PaymentRow(
+            payment_mode="NEFT",
+            beneficiary_name="MIHIRKUMAR D BOGHARA",
+            amount=Decimal("3450.00"),
+            payment_date="03-08-2026",
+            remark="PAID TO MIHIRKUMAR D BOGHARA FOR MIHIR BHAI CAR PETROL",
+            utr_no="IN42621557017544",
+            confidence=0.9,
+            page_number=1,
+        ),
+    ]
+    row, warnings = select_matching_payment_row(
+        rows,
+        amount=Decimal("3450.00"),
+        txn_date="2026-08-03",
+        narration="COMPLETELY DIFFERENT NARRATION XYZ",
+    )
+    assert row is None
+    assert any("remark" in w.lower() for w in warnings)
+
+
+def test_wrong_transaction_date_fails_with_reason():
+    rows = [
+        PaymentRow(
+            payment_mode="NEFT",
+            beneficiary_name="M S MOTORS",
+            amount=Decimal("10590.00"),
+            payment_date="03-08-2026",
+            remark="PAID TO M S MOTORS FOR EHGINE OIL",
+            utr_no="IN42621557017900",
+            confidence=0.9,
+            page_number=1,
+        ),
+    ]
+    row, warnings = select_matching_payment_row(
+        rows,
+        amount=Decimal("10590.00"),
+        txn_date="2026-08-04",
+        narration="PAID TO M S MOTORS FOR EHGINE OIL",
+    )
+    assert row is None
+    assert any("transaction date" in w.lower() for w in warnings)

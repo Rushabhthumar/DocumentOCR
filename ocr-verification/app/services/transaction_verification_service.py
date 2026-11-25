@@ -341,6 +341,7 @@ class TransactionVerificationService:
                     extraction.payment_rows,
                     amount=snapshot.amount,
                     txn_date=snapshot.date,
+                    narration=snapshot.narration,
                     utr_candidates=snapshot.utr_candidates,
                 )
                 warnings.extend([f"file {extraction.file_id}: {w}" for w in row_warnings])

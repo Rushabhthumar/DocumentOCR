@@ -7,6 +7,7 @@ from typing import Optional
 from app.models.extraction_models import FieldValue, PaymentRow
 from app.validators.amount_validator import normalize_amount
 from app.validators.date_validator import normalize_date
+from app.validators.description_validator import compare_descriptions
 
 
 HEADER_RE = re.compile(
@@ -165,78 +166,31 @@ def _payment_date_matches_txn(payment_date: Optional[str], txn_date: Optional[st
     return bool(nd and rd and nd == rd)
 
 
-def _all_rows_match_txn_date(rows: list[PaymentRow], txn_date: Optional[str]) -> bool:
-    """True only when every payment row has a date and all equal the transaction date."""
-    if not rows or not txn_date:
-        return False
-    return all(_payment_date_matches_txn(r.payment_date, txn_date) for r in rows)
-
-
-def _statement_total_amount(rows: list[PaymentRow]) -> Decimal:
-    return sum((r.amount for r in rows if r.amount is not None), Decimal("0.00"))
-
-
-def _build_statement_total_row(rows: list[PaymentRow], total: Decimal) -> PaymentRow:
-    # Prefer a single normalized display date when all rows share one raw date string.
-    dates = sorted({r.payment_date for r in rows if r.payment_date})
-    payment_date = dates[0] if len(dates) == 1 else (rows[0].payment_date if rows else None)
-    return PaymentRow(
-        payment_mode="STATEMENT",
-        beneficiary_name="MULTIPLE BENEFICIARIES",
-        amount=total,
-        payment_date=payment_date,
-        remark=f"STATEMENT TOTAL ({len(rows)} payments)",
-        status="Success",
-        utr_no=None,
-        confidence=0.9,
-        page_number=rows[0].page_number if rows else 1,
-        source_lines=[f"SUM of {len(rows)} payment rows = {total}"],
-    )
-
-
-def try_match_statement_total(
-    rows: list[PaymentRow],
+def _score_remark_vs_narration(
+    remark: Optional[str],
+    narration: Optional[str],
     *,
-    amount: Optional[Decimal],
-    txn_date: Optional[str],
-) -> tuple[Optional[PaymentRow], list[str]]:
+    fuzzy_threshold: int = 85,
+) -> tuple[bool, bool, float, str]:
     """
-    For multi-row UTR bills: sum all row amounts and match the transaction amount,
-    but only when every row payment date matches the transaction date.
+    Score document Remark against transaction narration.
+
+    Returns (eligible, hard_match, score, explanation).
+    hard_match = exact / token containment from compare_descriptions.
+    eligible = hard_match or strong fuzzy (>= threshold).
     """
-    warnings: list[str] = []
-    if len(rows) < 2 or amount is None:
-        return None, warnings
-
-    total = _statement_total_amount(rows)
-    if abs(total - amount) > Decimal("0.01"):
-        return None, warnings
-
-    if not txn_date:
-        warnings.append(
-            "Statement total equals transaction amount, but transaction date is missing"
-        )
-        return None, warnings
-
-    if not _all_rows_match_txn_date(rows, txn_date):
-        mismatched = sorted(
-            {
-                r.payment_date or "missing"
-                for r in rows
-                if not _payment_date_matches_txn(r.payment_date, txn_date)
-            }
-        )
-        warnings.append(
-            "Statement total equals transaction amount, but not all payment dates "
-            f"match transaction date ({txn_date}): {mismatched}"
-        )
-        return None, warnings
-
-    warnings.append(
-        f"Matched transaction amount to UTR statement total across {len(rows)} rows "
-        "(all payment dates match transaction date)"
+    cmp = compare_descriptions(
+        narration,
+        remark,
+        fuzzy_threshold=fuzzy_threshold,
+        field_name="remark",
     )
-    return _build_statement_total_row(rows, total), warnings
+    score = float(cmp.score) if cmp.score is not None else 0.0
+    if cmp.matched:
+        return True, True, score or 100.0, cmp.explanation
+    if score >= fuzzy_threshold:
+        return True, False, score, cmp.explanation
+    return False, False, score, cmp.explanation or "Remark did not match narration"
 
 
 def select_matching_payment_row(
@@ -244,67 +198,106 @@ def select_matching_payment_row(
     *,
     amount: Optional[Decimal],
     txn_date: Optional[str],
+    narration: Optional[str] = None,
     utr_candidates: Optional[list[str]] = None,
 ) -> tuple[Optional[PaymentRow], list[str]]:
+    """
+    Match one UTR payment row to the transaction.
+
+    Does NOT sum row amounts. Filters rows by transaction date, then requires a
+    unique match on date + amount + remark/narration.
+    """
     warnings: list[str] = []
     if not rows:
         return None, ["No payment rows extracted"]
 
+    if not txn_date:
+        return None, ["Transaction date missing; cannot match UTR payment row by date"]
+
+    date_hits = [r for r in rows if _payment_date_matches_txn(r.payment_date, txn_date)]
+    if not date_hits:
+        available = sorted({(r.payment_date or "missing") for r in rows})
+        return None, [
+            f"No payment row on transaction date {txn_date}; document dates: {available}"
+        ]
+
     utr_candidates = [u.upper() for u in (utr_candidates or []) if u]
-    candidates = rows
+    candidates = date_hits
     if utr_candidates:
-        utr_hits = [r for r in rows if r.utr_no and r.utr_no.upper() in utr_candidates]
-        if len(utr_hits) == 1:
-            return utr_hits[0], warnings
-        if len(utr_hits) > 1:
-            warnings.append("Multiple rows matched UTR candidates")
+        utr_hits = [
+            r for r in date_hits if r.utr_no and r.utr_no.upper() in utr_candidates
+        ]
+        if utr_hits:
             candidates = utr_hits
+        else:
+            warnings.append(
+                "UTR candidates present but none matched a payment row on transaction date"
+            )
 
-    amount_hits = []
-    for row in candidates:
-        if amount is None or row.amount is None:
-            continue
-        if abs(row.amount - amount) <= Decimal("0.01"):
-            amount_hits.append(row)
+    if amount is None:
+        return None, warnings + [
+            "Transaction amount missing; cannot match UTR payment row by amount"
+        ]
 
+    amount_hits = [
+        r
+        for r in candidates
+        if r.amount is not None and abs(r.amount - amount) <= Decimal("0.01")
+    ]
     if not amount_hits:
-        total_row, total_warnings = try_match_statement_total(
-            rows, amount=amount, txn_date=txn_date
-        )
-        warnings.extend(total_warnings)
-        if total_row is not None:
-            return total_row, warnings
-        return None, warnings + ["No payment row matched transaction amount"]
+        return None, warnings + [
+            f"No payment row on transaction date matched amount {amount}"
+        ]
 
-    date_hits = []
+    if not (narration or "").strip():
+        if len(amount_hits) == 1:
+            return None, warnings + [
+                "Date and amount matched but narration missing; cannot match UTR remark"
+            ]
+        return None, warnings + [
+            "Multiple payment rows matched date and amount; narration missing to "
+            "disambiguate by remark"
+        ]
+
+    scored: list[tuple[PaymentRow, bool, float, str]] = []
+    remark_failures: list[str] = []
     for row in amount_hits:
-        if _payment_date_matches_txn(row.payment_date, txn_date):
-            date_hits.append(row)
-
-    if len(date_hits) == 1:
-        return date_hits[0], warnings
-    if len(date_hits) > 1:
-        # Ambiguous single-row amount; still allow full-statement total match.
-        total_row, total_warnings = try_match_statement_total(
-            rows, amount=amount, txn_date=txn_date
+        eligible, hard_match, score, explanation = _score_remark_vs_narration(
+            row.remark, narration
         )
-        warnings.extend(total_warnings)
-        if total_row is not None:
-            return total_row, warnings
-        warnings.append("Multiple payment rows matched amount and date")
-        return None, warnings
-    if len(amount_hits) == 1:
-        warnings.append("Amount matched but payment date did not; manual review required")
-        return amount_hits[0], warnings
+        if eligible:
+            scored.append((row, hard_match, score, explanation))
+        else:
+            label = row.utr_no or row.beneficiary_name or "row"
+            remark_failures.append(f"{label}: {explanation}")
 
-    total_row, total_warnings = try_match_statement_total(
-        rows, amount=amount, txn_date=txn_date
-    )
-    warnings.extend(total_warnings)
-    if total_row is not None:
-        return total_row, warnings
-    warnings.append("Multiple payment rows matched amount without unique date match")
-    return None, warnings
+    # Prefer exact/token (hard) matches over fuzzy-only hits.
+    hard_hits = [s for s in scored if s[1]]
+    if len(hard_hits) == 1:
+        return hard_hits[0][0], warnings
+    if len(hard_hits) > 1:
+        return None, warnings + [
+            "Multiple payment rows matched date, amount, and remark/narration"
+        ]
+
+    if not scored:
+        if len(amount_hits) == 1:
+            detail = remark_failures[0] if remark_failures else "remark mismatch"
+            return None, warnings + [
+                f"Date and amount matched but remark did not match narration ({detail})"
+            ]
+        return None, warnings + [
+            "Payment rows matched date and amount but remark/narration did not uniquely match"
+        ] + remark_failures[:5]
+
+    # Fuzzy-only: accept a clear winner by score margin.
+    scored.sort(key=lambda item: item[2], reverse=True)
+    if len(scored) == 1 or scored[0][2] - scored[1][2] >= 5.0:
+        return scored[0][0], warnings
+
+    return None, warnings + [
+        "Multiple payment rows matched date, amount, and remark/narration"
+    ]
 
 
 def payment_row_to_fields(row: PaymentRow) -> dict[str, FieldValue]:

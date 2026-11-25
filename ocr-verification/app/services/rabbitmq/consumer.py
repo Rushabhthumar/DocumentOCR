@@ -184,7 +184,9 @@ class BatchVerifyConsumer:
         job_id = str(payload.get("job_id") or "")
         txn_id = str(payload.get("transaction_id") or "")
         force = bool(payload.get("force", True))
-        raw_txn = payload.get("transaction") or {}
+        raw_txn = payload.get("transaction")
+        # Empty dict must not skip Finance GetTransaction (no attachments → false DOCUMENT_NOT_FOUND).
+        transaction_payload = raw_txn if isinstance(raw_txn, dict) and raw_txn else None
 
         if not txn_id:
             raise ValueError("Queue message missing transaction_id")
@@ -198,7 +200,7 @@ class BatchVerifyConsumer:
                 result = self.verification_service.verify(
                     txn_id,
                     force=force,
-                    transaction_payload=raw_txn if isinstance(raw_txn, dict) else None,
+                    transaction_payload=transaction_payload,
                 )
             if result.decision == VerificationDecision.VERIFIED:
                 status = "COMPLETED"
