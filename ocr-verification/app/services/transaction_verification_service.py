@@ -228,7 +228,10 @@ class TransactionVerificationService:
                         self.transaction_service.mark_verified_by_ocr(transaction_id, raw_txn)
                         status_updated = True
                         verified_flag_set = True
-                        message = "Verified. Appended OCR to narration."
+                        message = (
+                            f"Verified. Set {self.settings.verified_flag_field}="
+                            f"{self.settings.verified_flag_value}."
+                        )
                     except Exception as exc:  # noqa: BLE001
                         decision = VerificationDecision.MANUAL_REVIEW
                         warnings.append(f"Verification matched but status update failed: {exc}")

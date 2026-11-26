@@ -1,28 +1,27 @@
 from app.services.transaction_service import TransactionService
 
 
-def test_build_verified_update_payload_appends_ocr_to_narration():
+def test_build_verified_update_payload_sets_is_ocr_verified():
     service = TransactionService()
     original = {
         "_id": "txn-1",
         "amount": 100,
-        "narration": "sdf\n",
-        "isTransactionVerifyByOCR": False,
+        "narration": "PAID TO VENDOR FOR SUPPLY",
+        "isOCRVerified": False,
     }
     payload = service.build_verified_update_payload(original)
-    # Flag is left unchanged for now; only narration is updated
-    assert payload["isTransactionVerifyByOCR"] is False
-    assert payload["narration"].strip().endswith("OCR")
-    assert "sdf" in payload["narration"]
+    assert payload["isOCRVerified"] is True
+    # Narration must not be changed
+    assert payload["narration"] == "PAID TO VENDOR FOR SUPPLY"
 
 
-def test_build_verified_update_payload_does_not_duplicate_ocr():
+def test_build_ocr_flag_update_payload_can_set_false():
     service = TransactionService()
     original = {
         "_id": "txn-1",
-        "narration": "sdf OCR",
-        "isTransactionVerifyByOCR": False,
+        "narration": "some text",
+        "isOCRVerified": True,
     }
-    payload = service.build_verified_update_payload(original)
-    assert payload["narration"].count("OCR") == 1
-    assert payload["isTransactionVerifyByOCR"] is False
+    payload = service.build_ocr_flag_update_payload(original, is_ocr_verified=False)
+    assert payload["isOCRVerified"] is False
+    assert payload["narration"] == "some text"

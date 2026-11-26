@@ -185,48 +185,40 @@ class TransactionService:
 
     def build_verified_update_payload(self, original_payload: dict[str, Any]) -> dict[str, Any]:
         """
-        Use the exact GET transaction response, then append "OCR" to narration
-        (without duplicating if already present). Does not set isTransactionVerifyByOCR.
+        Use the exact GET/list transaction payload and set isOCRVerified=true.
+        Does not modify narration.
         """
         payload = copy.deepcopy(original_payload)
-
-        existing_narration = payload.get("narration")
-        narration = "" if existing_narration is None else str(existing_narration)
-        if "OCR" not in narration.upper().split():
-            # Append marker; keep a clean separator
-            if narration and not narration.endswith(("\n", " ", "\t")):
-                narration = f"{narration} OCR"
-            elif narration:
-                narration = f"{narration}OCR"
-            else:
-                narration = "OCR"
-            payload["narration"] = narration
-        else:
-            payload["narration"] = narration
-
+        flag_field = self.settings.verified_flag_field or "isOCRVerified"
+        payload[flag_field] = bool(self.settings.verified_flag_value)
         return payload
 
-    def mark_verified_by_ocr(self, transaction_id: str, original_payload: dict[str, Any]) -> dict[str, Any]:
+    def build_ocr_flag_update_payload(
+        self,
+        original_payload: dict[str, Any],
+        *,
+        is_ocr_verified: bool,
+    ) -> dict[str, Any]:
+        """Set isOCRVerified true/false without changing narration."""
+        payload = copy.deepcopy(original_payload)
+        flag_field = self.settings.verified_flag_field or "isOCRVerified"
+        payload[flag_field] = bool(is_ocr_verified)
+        return payload
+
+    def set_ocr_verified_flag(
+        self,
+        transaction_id: str,
+        original_payload: dict[str, Any],
+        *,
+        is_ocr_verified: bool,
+    ) -> dict[str, Any]:
         """
-        PUT the existing transaction GET response with OCR appended to narration.
+        PUT the existing transaction changing only isOCRVerified (true/false).
+        Narration and all other fields stay as in original_payload.
         """
-        payload = self.build_verified_update_payload(original_payload)
-
-        # Keep a local copy of the exact PUT body for debugging/inspection
-        try:
-            debug_path = self.settings.temp_path / f"put_payload_{transaction_id}.json"
-            import json
-
-            debug_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-            logger.info(
-                "Prepared PUT %s narration=%r (saved %s)",
-                transaction_id,
-                payload.get("narration"),
-                debug_path,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not save PUT payload debug file: %s", exc)
-
+        payload = self.build_ocr_flag_update_payload(
+            original_payload, is_ocr_verified=is_ocr_verified
+        )
         path = self.settings.transaction_update_path.format(transaction_id=transaction_id)
         url = f"{self.settings.finance_api_base_url.rstrip('/')}{path}"
         owns_client = self._client is None
@@ -243,3 +235,11 @@ class TransactionService:
         finally:
             if owns_client:
                 client.close()
+
+    def mark_verified_by_ocr(self, transaction_id: str, original_payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        PUT the existing transaction with isOCRVerified=true (no narration change).
+        """
+        return self.set_ocr_verified_flag(
+            transaction_id, original_payload, is_ocr_verified=True
+        )

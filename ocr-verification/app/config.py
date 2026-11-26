@@ -56,9 +56,9 @@ class Settings(BaseSettings):
     failed_verification_dir: str = "./FailedVarificationDocuments"
 
     # Status field written only on successful verification
-    verified_flag_field: str = "isTransactionVerifyByOCR"
+    verified_flag_field: str = "isOCRVerified"
     verified_flag_value: bool = True
-    # When false: compare OCR vs transaction but do NOT PUT narration / verified flag
+    # When false: compare OCR vs transaction but do NOT PUT verified flag
     # Use this for the first pass against production data.
     update_on_verify: bool = True
 
